@@ -1,0 +1,154 @@
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from openbase_coder_cli.cartesia_voice_catalog import cartesia_voice_for_id
+from openbase_coder_cli.livekit_voice_history import (
+    VoiceHistoryEntry,
+    get_voice_history_entry,
+)
+from openbase_coder_cli.livekit_voice_route import (
+    get_livekit_voice_route_state,
+    super_agent_voice_for_context,
+)
+
+VoiceRouteRole = Literal["none", "dispatcher", "active_target"]
+
+
+def get_livekit_shared_thread_id() -> str | None:
+    state = get_livekit_voice_route_state()
+    return state.dispatcher_thread_id
+
+
+def annotate_thread_payload(
+    payload: dict[str, Any],
+    *,
+    thread_id: str | None = None,
+) -> dict[str, Any]:
+    resolved_thread_id = thread_id or str(
+        payload.get("thread_id") or payload.get("session_id") or ""
+    )
+    route_state = get_livekit_voice_route_state()
+    is_dispatcher = bool(
+        resolved_thread_id
+        and route_state.dispatcher_thread_id
+        and resolved_thread_id == route_state.dispatcher_thread_id
+    )
+    is_active_target = bool(
+        resolved_thread_id
+        and route_state.active_target_thread_id
+        and resolved_thread_id == route_state.active_target_thread_id
+    )
+
+    role: VoiceRouteRole = "none"
+    if is_active_target:
+        role = "active_target"
+    elif is_dispatcher:
+        role = "dispatcher"
+
+    display_name = "dispatcher" if is_dispatcher else _thread_display_name(payload)
+    agent_name = _thread_agent_name(payload)
+    assignment = None
+
+    if is_dispatcher:
+        agent_name = "dispatcher"
+        assignment = _voice_assignment_payload(
+            thread_id=resolved_thread_id,
+            agent_name=agent_name,
+            voice_id=route_state.dispatcher_voice_id,
+            voice_name=route_state.dispatcher_voice_name,
+            source="route_state",
+        )
+    elif is_active_target:
+        active_agent_name = route_state.active_target_voice_name or agent_name
+        catalog_voice = cartesia_voice_for_id(route_state.active_target_voice_id or "")
+        voice_name = (
+            catalog_voice.name
+            if catalog_voice is not None
+            else route_state.active_target_voice_name
+        )
+        assignment = _voice_assignment_payload(
+            thread_id=resolved_thread_id,
+            agent_name=active_agent_name,
+            voice_id=route_state.active_target_voice_id,
+            voice_name=voice_name,
+            source="route_state",
+        )
+    else:
+        history = get_voice_history_entry(resolved_thread_id)
+        if history is not None:
+            assignment = _voice_assignment_from_history(history)
+        elif agent_name:
+            voice = super_agent_voice_for_context(
+                resolved_thread_id,
+                display_name,
+                agent_name,
+            )
+            if voice is not None:
+                assignment = _voice_assignment_payload(
+                    thread_id=resolved_thread_id,
+                    agent_name=agent_name,
+                    voice_id=voice.voice_id,
+                    voice_name=voice.name,
+                    source="derived",
+                )
+
+    return {
+        **payload,
+        "agent_name": agent_name,
+        "display_name": display_name,
+        "voice_route": {
+            "role": role,
+            "active": is_active_target
+            or (is_dispatcher and not route_state.active_target_thread_id),
+        },
+        "voice_assignment": assignment,
+    }
+
+
+def _thread_display_name(payload: dict[str, Any]) -> str:
+    for key in ("name", "title", "preview"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    directory = payload.get("directory")
+    if isinstance(directory, str) and directory.strip():
+        basename = directory.rstrip("/").rsplit("/", 1)[-1]
+        if basename:
+            return basename
+    thread_id = payload.get("thread_id") or payload.get("session_id")
+    return str(thread_id or "thread")
+
+
+def _thread_agent_name(payload: dict[str, Any]) -> str | None:
+    value = payload.get("agent_name") or payload.get("agentName")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _voice_assignment_from_history(history: VoiceHistoryEntry) -> dict[str, str | None]:
+    return _voice_assignment_payload(
+        thread_id=history.thread_id,
+        agent_name=history.agent_name,
+        voice_id=history.voice_id,
+        voice_name=history.voice_name,
+        source=history.source,
+    )
+
+
+def _voice_assignment_payload(
+    *,
+    thread_id: str,
+    agent_name: str | None,
+    voice_id: str | None,
+    voice_name: str | None,
+    source: str,
+) -> dict[str, str | None] | None:
+    if not voice_id and not voice_name and not agent_name:
+        return None
+    return {
+        "thread_id": thread_id,
+        "agent_name": agent_name,
+        "voice_id": voice_id,
+        "voice_name": voice_name,
+        "source": source,
+    }

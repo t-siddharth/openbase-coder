@@ -1,0 +1,238 @@
+"""CLI commands for authentication: browser login and logout."""
+
+from __future__ import annotations
+
+import json
+import os
+import threading
+import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
+
+import click
+import httpx
+
+from openbase_coder_cli.config.token_manager import (
+    DEFAULT_OAUTH_CLIENT_ID,
+    DEFAULT_OAUTH_REDIRECT_URI,
+    TokenManager,
+    create_pkce_challenge,
+    create_pkce_verifier,
+)
+from openbase_coder_cli.paths import AUTH_JSON_PATH
+
+DEFAULT_WEB_BACKEND_URL = "https://app.openbase.cloud"
+
+
+def _get_web_backend_url() -> str:
+    return os.environ.get(
+        "OPENBASE_CODER_CLI_WEB_BACKEND_URL", DEFAULT_WEB_BACKEND_URL
+    ).rstrip("/")
+
+
+def _get_oauth_client_id() -> str:
+    return os.environ.get("OPENBASE_CODER_CLI_OAUTH_CLIENT_ID", DEFAULT_OAUTH_CLIENT_ID)
+
+
+def _get_oauth_redirect_uri() -> str:
+    return os.environ.get(
+        "OPENBASE_CODER_CLI_OAUTH_REDIRECT_URI", DEFAULT_OAUTH_REDIRECT_URI
+    )
+
+
+class _OAuthCallbackHandler(BaseHTTPRequestHandler):
+    server_version = "OpenbaseCoderOAuth/1.0"
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        expected_path = getattr(self.server, "callback_path", "/oauth/callback")
+
+        if parsed.path != expected_path:
+            self.send_response(404)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"Not found")
+            return
+
+        params = parse_qs(parsed.query)
+        result = {key: values[0] for key, values in params.items()}
+
+        if "code" not in result and "error" not in result:
+            self.send_response(400)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"Missing OAuth callback parameters")
+            return
+
+        expected_state = getattr(self.server, "expected_state", "")
+        if expected_state and result.get("state") != expected_state:
+            self.send_response(409)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(
+                b"<html><body><h1>Older login attempt ignored</h1>"
+                b"<p>Please continue in the newest Openbase login tab.</p>"
+                b"</body></html>"
+            )
+            return
+
+        self.server.result = result
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(
+            b"<html><body><h1>Login complete</h1>"
+            b"<p>You can return to Openbase Coder.</p></body></html>"
+        )
+        self.server.done.set()
+
+    def log_message(self, format: str, *args) -> None:  # noqa: A003
+        return
+
+
+class _OAuthCallbackServer(HTTPServer):
+    allow_reuse_address = True
+
+
+def _wait_for_callback(redirect_uri: str, *, expected_state: str = "") -> dict[str, str]:
+    parsed = urlparse(redirect_uri)
+    server = _OAuthCallbackServer(
+        (parsed.hostname or "127.0.0.1", parsed.port or 80),
+        _OAuthCallbackHandler,
+    )
+    server.timeout = 1
+    server.done = threading.Event()
+    server.result = {}
+    server.callback_path = parsed.path or "/oauth/callback"
+    server.expected_state = expected_state
+    try:
+        while not server.done.wait(timeout=0):
+            server.handle_request()
+    finally:
+        server.server_close()
+    return server.result
+
+
+def _exchange_oauth_code(
+    *, web_backend_url: str, code: str, redirect_uri: str, code_verifier: str
+) -> str:
+    token_url = f"{web_backend_url}/o/token/"
+    response = httpx.post(
+        token_url,
+        data={
+            "grant_type": "authorization_code",
+            "client_id": _get_oauth_client_id(),
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "code_verifier": code_verifier,
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    access_token = payload.get("access_token", "")
+    if not access_token:
+        raise click.ClickException("OAuth login succeeded but no access token was returned.")
+    return access_token
+
+
+def _exchange_oauth_token_for_jwts(
+    *, web_backend_url: str, oauth_access_token: str
+) -> tuple[str, str, int]:
+    exchange_url = f"{web_backend_url}/api/openbase/auth/cli/token-exchange/"
+    response = httpx.post(
+        exchange_url,
+        headers={"Authorization": f"Bearer {oauth_access_token}"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    access_token = payload.get("access_token", "")
+    refresh_token = payload.get("refresh_token", "")
+    expires_in = int(payload.get("access_token_expires_in") or 300)
+    if not access_token or not refresh_token:
+        raise click.ClickException(
+            "Token exchange succeeded but no JWT access/refresh token pair was returned."
+        )
+    return access_token, refresh_token, expires_in
+
+
+@click.command()
+def login() -> None:
+    """Log in to Openbase Coder using browser-based OAuth."""
+    web_backend_url = _get_web_backend_url()
+    redirect_uri = _get_oauth_redirect_uri()
+    state = os.urandom(24).hex()
+    code_verifier = create_pkce_verifier()
+    code_challenge = create_pkce_challenge(code_verifier)
+
+    authorize_url = urljoin(web_backend_url + "/", "o/authorize/")
+    query = urlencode(
+        {
+            "response_type": "code",
+            "client_id": _get_oauth_client_id(),
+            "redirect_uri": redirect_uri,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "state": state,
+        }
+    )
+    auth_url = f"{authorize_url}?{query}"
+
+    click.echo("Opening browser for Openbase login...")
+    click.echo(auth_url)
+    webbrowser.open(auth_url)
+
+    callback = _wait_for_callback(redirect_uri, expected_state=state)
+    if callback.get("state") != state:
+        raise click.ClickException("OAuth callback state did not match.")
+
+    error = callback.get("error")
+    if error:
+        description = callback.get("error_description") or error
+        raise click.ClickException(f"OAuth login failed: {description}")
+
+    code = callback.get("code")
+    if not code:
+        raise click.ClickException("OAuth login failed: missing authorization code.")
+
+    try:
+        oauth_access_token = _exchange_oauth_code(
+            web_backend_url=web_backend_url,
+            code=code,
+            redirect_uri=redirect_uri,
+            code_verifier=code_verifier,
+        )
+        access_token, refresh_token, expires_in = _exchange_oauth_token_for_jwts(
+            web_backend_url=web_backend_url,
+            oauth_access_token=oauth_access_token,
+        )
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text
+        try:
+            detail = json.dumps(exc.response.json())
+        except ValueError:
+            pass
+        raise click.ClickException(
+            f"OAuth login failed: {exc.response.status_code} — {detail}"
+        ) from None
+
+    # Store tokens
+    mgr = TokenManager(web_backend_url)
+    mgr.store_tokens(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_in=expires_in,
+    )
+
+    click.echo(f"Logged in successfully. Tokens saved to {AUTH_JSON_PATH}")
+
+
+@click.command()
+def logout() -> None:
+    """Log out and clear stored tokens."""
+    if AUTH_JSON_PATH.is_file():
+        AUTH_JSON_PATH.unlink()
+        click.echo("Logged out. Tokens removed.")
+    else:
+        click.echo("Not logged in (no stored tokens found).")

@@ -1,0 +1,72 @@
+"""
+CLI entry point for openbase_coder_cli.
+"""
+
+from __future__ import annotations
+
+import click
+
+from openbase_coder_cli._version import __version__
+
+from .auth import login, logout
+from .boilersync import boilersync
+from .bootstrap import bootstrap
+from .claude_chrome import claude_chrome
+from .codex_sync import codex_sync
+from .computer_use import computer_use
+from .doctor import doctor
+from .plugins import plugins
+from .restart import restart
+from .routines import routines
+from .server import server
+from .services import services
+from .setup import setup
+from .super_agent_name import super_agent_name
+from .user import exit_to_dispatch, user
+
+
+def print_version(ctx, param, value):
+    if not value or ctx.resilient_parsing:
+        return
+    click.echo(f"openbase-coder {__version__}")
+    ctx.exit()
+
+
+@click.group()
+@click.option(
+    "--version",
+    is_flag=True,
+    callback=print_version,
+    expose_value=False,
+    is_eager=True,
+    help="Show the version and exit.",
+)
+def main():
+    """Openbase Coder Cli
+
+    OpenBase Coder CLI with embedded server
+    """
+    pass
+
+
+main.add_command(server)
+main.add_command(setup)
+main.add_command(services)
+main.add_command(doctor)
+main.add_command(login)
+main.add_command(logout)
+main.add_command(plugins)
+main.add_command(bootstrap)
+main.add_command(restart)
+main.add_command(user)
+main.add_command(boilersync)
+main.add_command(codex_sync)
+main.add_command(claude_chrome)
+main.add_command(computer_use)
+main.add_command(routines)
+main.add_command(super_agent_name)
+main.add_command(exit_to_dispatch)
+
+
+if __name__ == "__main__":
+    main()

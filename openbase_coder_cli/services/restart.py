@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import shlex
+import subprocess
+import sys
+import time
+from dataclasses import asdict, dataclass
+from typing import Any
+
+import click
+
+from openbase_coder_cli.services.definitions import SERVICES
+from openbase_coder_cli.services.launchd import (
+    install_service,
+    launchctl_kill,
+    launchctl_status,
+)
+from openbase_coder_cli.services.registry import find_service, require_installation
+from openbase_coder_cli.services.voice_warning import (
+    any_service_action_interrupts_voice,
+    warn_before_voice_interruption,
+)
+
+DEFAULT_RESTART_DELAY_SECONDS = 8.0
+API_RESTART_DELAY_SECONDS = 0.5
+
+
+@dataclass(frozen=True)
+class RestartRequest:
+    services: tuple[str, ...] = ()
+    recreate_dispatcher: bool = False
+    delay_seconds: float = DEFAULT_RESTART_DELAY_SECONDS
+
+
+@dataclass(frozen=True)
+class RestartPlan:
+    services: tuple[str, ...]
+    recreate_dispatcher: bool
+    interrupts_voice: bool
+    delay_seconds: float
+
+
+def restart_target_names() -> list[str]:
+    return [service.name for service in SERVICES]
+
+
+def build_restart_plan(request: RestartRequest) -> RestartPlan:
+    service_names = [service.name for service in SERVICES]
+    valid_targets = set(service_names)
+
+    requested_targets = list(request.services) or service_names
+    unknown = [target for target in requested_targets if target not in valid_targets]
+    if unknown:
+        valid = ", ".join(restart_target_names())
+        raise click.ClickException(f"Unknown restart target '{unknown[0]}'. Valid: {valid}")
+
+    services: list[str] = []
+    for target in requested_targets:
+        _append_unique(services, target)
+
+    if request.recreate_dispatcher:
+        _append_unique(services, "livekit-agent")
+
+    service_defs = [find_service(name) for name in services]
+    return RestartPlan(
+        services=tuple(services),
+        recreate_dispatcher=request.recreate_dispatcher,
+        interrupts_voice=any_service_action_interrupts_voice(service_defs, "restart"),
+        delay_seconds=max(request.delay_seconds, 0.0),
+    )
+
+
+def schedule_restart(
+    request: RestartRequest,
+    *,
+    warn: bool = True,
+    emit_cli_warning: bool = True,
+) -> RestartPlan:
+    require_installation()
+
+    plan = build_restart_plan(request)
+    if warn and plan.interrupts_voice:
+        warn_before_voice_interruption(
+            reason="restart",
+            emit_cli_warning=emit_cli_warning,
+        )
+
+    command = _scheduled_restart_command(plan)
+    subprocess.Popen(
+        ["/bin/sh", "-c", command],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return plan
+
+
+def execute_restart_plan(plan: RestartPlan) -> None:
+    config = require_installation()
+
+    if plan.delay_seconds > 0:
+        time.sleep(plan.delay_seconds)
+
+    if plan.recreate_dispatcher:
+        from openbase_coder_cli.livekit_voice_route import (
+            prepare_livekit_dispatcher_recreation,
+        )
+
+        prepare_livekit_dispatcher_recreation()
+
+    services = [find_service(name) for name in plan.services]
+    for service in services:
+        if launchctl_status(service)["installed"]:
+            launchctl_kill(service)
+
+    if services:
+        time.sleep(2)
+
+    for service in services:
+        install_service(config, service)
+
+    if plan.recreate_dispatcher:
+        from openbase_coder_cli.livekit_voice_route import (
+            warm_livekit_dispatcher_thread,
+        )
+
+        asyncio.run(warm_livekit_dispatcher_thread())
+
+
+def execute_restart_payload(raw_payload: str) -> None:
+    payload = json.loads(raw_payload)
+    execute_restart_plan(
+        RestartPlan(
+            services=tuple(payload.get("services") or ()),
+            recreate_dispatcher=bool(payload.get("recreate_dispatcher")),
+            interrupts_voice=bool(payload.get("interrupts_voice")),
+            delay_seconds=float(payload.get("delay_seconds") or 0.0),
+        )
+    )
+
+
+def restart_plan_payload(plan: RestartPlan) -> dict[str, Any]:
+    return {
+        "services": list(plan.services),
+        "recreate_dispatcher": plan.recreate_dispatcher,
+        "interrupts_voice": plan.interrupts_voice,
+        "delay_seconds": plan.delay_seconds,
+    }
+
+
+def _scheduled_restart_command(plan: RestartPlan) -> str:
+    payload = json.dumps(asdict(plan), separators=(",", ":"))
+    script = (
+        "from openbase_coder_cli.services.restart import execute_restart_payload; "
+        f"execute_restart_payload({payload!r})"
+    )
+    return f"exec {shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+
+
+def _append_unique(items: list[str], item: str) -> None:
+    if item not in items:
+        items.append(item)

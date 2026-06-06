@@ -1,0 +1,47 @@
+"""
+ASGI config for openbase_coder_cli.
+
+It exposes the ASGI callable as a module-level variable named ``application``.
+
+For more information on this file, see
+https://docs.djangoproject.com/en/5.2/howto/deployment/asgi/
+"""
+
+import os
+
+from django.core.asgi import get_asgi_application
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "openbase_coder_cli.config.settings")
+
+# Must call get_asgi_application() before importing channels routing
+django_asgi_app = get_asgi_application()
+
+from channels.routing import ProtocolTypeRouter, URLRouter  # noqa: E402
+
+from openbase_coder_cli.openbase_coder_cli_app.middleware import (
+    TokenAuthMiddleware,  # noqa: E402
+)
+from openbase_coder_cli.openbase_coder_cli_app.routing import (
+    websocket_urlpatterns,  # noqa: E402
+)
+
+_inner = ProtocolTypeRouter(
+    {
+        "http": django_asgi_app,
+        "websocket": TokenAuthMiddleware(URLRouter(websocket_urlpatterns)),
+    }
+)
+
+
+async def application(scope, receive, send):
+    """ASGI application with lifespan passthrough."""
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+    else:
+        await _inner(scope, receive, send)

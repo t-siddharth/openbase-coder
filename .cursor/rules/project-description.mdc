@@ -1,0 +1,6 @@
+---
+description:
+globs:
+alwaysApply: true
+---
+`openbase-coder-cli` is a CLI tool.

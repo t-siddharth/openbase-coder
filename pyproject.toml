@@ -1,0 +1,88 @@
+[project]
+name = "openbase-coder"
+description = "OpenBase Coder CLI with embedded server"
+authors = [{ name = "Gabe Montague", email = "gabe@openbase.com" }]
+license = "AGPL-3.0-only"
+readme = "README.md"
+requires-python = ">=3.13"
+dynamic = ["version"]
+dependencies = [
+    "click>=8.2.0",
+    "Django==5.2.6",
+    "djangorestframework==3.16.1",
+    "django-cors-headers>=4.6.0",
+    "python-dotenv>=1.0.0",
+    "gunicorn>=23.0.0",
+    "uvicorn[standard]>=0.32.0",
+    "whitenoise>=6.8.0",
+    "channels>=4.2.0",
+    "django-mcp-server",
+    "pydantic>=2.12.5",
+    "PyJWT>=2.9.0",
+    "cryptography>=43.0.0",
+    "httpx>=0.28.1",
+    "mcp[cli]>=1.25.0",
+    "deepagents>=0.3.12",
+    "uv>=0.9.22",
+    "livekit-agents[silero,turn-detector]>=1.4.1",
+    "livekit-api>=1.1.0",
+    "livekit-plugins-assemblyai>=1.4.2",
+    "livekit-plugins-cartesia>=1.4.1",
+    "livekit-plugins-deepgram==1.5.4",
+    "livekit-plugins-noise-cancellation>=0.2.5",
+    "aiohttp>=3.13.3",
+    "multi-workspace>=3.2.2",
+    "super-agents",
+    "websockets>=16.0",
+]
+
+[project.urls]
+Repository = "https://github.com/gabemontague/openbase-coder-cli"
+Issues = "https://github.com/gabemontague/openbase-coder-cli/issues"
+
+[project.scripts]
+openbase-coder = "openbase_coder_cli.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.11.10",
+    "pytest>=8.3.5",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=6.1.1",
+    "pytest-mock>=3.14.0",
+    "pyinstaller>=6.9.0",
+]
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+exclude-newer = "1 week"
+
+[tool.uv.sources]
+super-agents = { path = "../super-agents", editable = true }
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "openbase_coder_cli/_version.py"
+
+[tool.ruff]
+target-version = "py313"
+select = ["E", "F", "I", "B", "W", "C90"]
+ignore = ["C901", "E501", "F821"]
+
+[tool.ruff.lint]
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.format]
+line-ending = "auto"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

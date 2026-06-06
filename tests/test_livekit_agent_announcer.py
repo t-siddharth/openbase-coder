@@ -1,0 +1,765 @@
+from __future__ import annotations
+
+import json
+import logging
+import wave
+
+import pytest
+from livekit import rtc
+
+from openbase_coder_cli.livekit_agent import livekit
+from openbase_coder_cli.livekit_agent.codex_app_client import CodexAppServerClient
+from openbase_coder_cli.livekit_agent.livekit import (
+    ANNOUNCER_AUDIO_KIND,
+    ANNOUNCER_TOPIC,
+    DEFAULT_CARTESIA_TTS_VOLUME,
+    DIRECT_LIVEKIT_BUILTIN_DEVELOPER_INSTRUCTIONS,
+    DIRECT_LIVEKIT_INSTRUCTIONS_PATH_ENV,
+    DIRECT_LIVEKIT_INSTRUCTIONS_TEXT_ENV,
+    EXIT_TO_DISPATCH_PHRASE,
+    VOICE_ROUTE_TOPIC,
+    AnnouncerAudioMessage,
+    AnnouncerMessage,
+    AnnouncerSpeechQueue,
+    BrainScoreAudioScorer,
+    LiveKitVoiceRouter,
+    VoiceRouteCommand,
+    VoiceSelectingCartesiaTTS,
+    _is_exit_to_dispatch_command,
+    _normalize_spoken_command,
+    cartesia,
+    load_direct_livekit_developer_instructions,
+    parse_announcer_audio_packet,
+    parse_announcer_packet,
+    parse_voice_route_packet,
+    stable_super_agent_voice_id,
+)
+
+
+def test_parse_announcer_packet_ignores_other_topics():
+    packet = rtc.DataPacket(
+        data=b'{"message_id":"1","text":"hello"}',
+        kind=rtc.DataPacketKind.Value("KIND_RELIABLE"),
+        participant=None,
+        topic="lk.chat",
+    )
+
+    assert parse_announcer_packet(packet) is None
+
+
+def test_parse_announcer_packet_reads_message():
+    packet = rtc.DataPacket(
+        data=b'{"message_id":"announcer-1","text":" hello ","voice_id":"voice-1"}',
+        kind=rtc.DataPacketKind.Value("KIND_RELIABLE"),
+        participant=None,
+        topic=ANNOUNCER_TOPIC,
+    )
+
+    assert parse_announcer_packet(packet) == AnnouncerMessage(
+        message_id="announcer-1",
+        text="hello",
+        voice_id="voice-1",
+    )
+
+
+def test_parse_announcer_audio_packet_reads_path():
+    packet = rtc.DataPacket(
+        data=(
+            f'{{"kind":"{ANNOUNCER_AUDIO_KIND}",'
+            '"message_id":"audio-1","audio_path":"/tmp/done.wav"}'
+        ).encode("utf-8"),
+        kind=rtc.DataPacketKind.Value("KIND_RELIABLE"),
+        participant=None,
+        topic=ANNOUNCER_TOPIC,
+    )
+
+    assert parse_announcer_audio_packet(packet) == AnnouncerAudioMessage(
+        message_id="audio-1",
+        audio_path="/tmp/done.wav",
+    )
+    assert parse_announcer_packet(packet) is None
+
+
+def test_parse_voice_route_packet_reads_exit_action():
+    packet = rtc.DataPacket(
+        data=b'{"action":"exit_to_dispatch"}',
+        kind=rtc.DataPacketKind.Value("KIND_RELIABLE"),
+        participant=None,
+        topic=VOICE_ROUTE_TOPIC,
+    )
+
+    assert parse_voice_route_packet(packet) == VoiceRouteCommand(
+        action="exit_to_dispatch"
+    )
+
+
+def test_parse_voice_route_packet_reads_transfer_fields():
+    packet = rtc.DataPacket(
+        data=b'{"action":"transfer_to_thread","thread_id":"thr-1","cwd":"/tmp/project","label":"Project","state":{"active_target_voice_id":"voice-1","active_target_voice_name":"Alice"}}',
+        kind=rtc.DataPacketKind.Value("KIND_RELIABLE"),
+        participant=None,
+        topic=VOICE_ROUTE_TOPIC,
+    )
+
+    assert parse_voice_route_packet(packet) == VoiceRouteCommand(
+        action="transfer_to_thread",
+        thread_id="thr-1",
+        cwd="/tmp/project",
+        label="Project",
+        active_target_voice_id="voice-1",
+        active_target_voice_name="Alice",
+    )
+
+
+def test_parse_voice_route_packet_uses_agent_name_as_voice_name_fallback():
+    packet = rtc.DataPacket(
+        data=b'{"action":"transfer_to_thread","thread_id":"thr-1","cwd":"/tmp/project","label":"Project","agent_name":"Dottie","state":{"active_target_voice_id":"voice-1"}}',
+        kind=rtc.DataPacketKind.Value("KIND_RELIABLE"),
+        participant=None,
+        topic=VOICE_ROUTE_TOPIC,
+    )
+
+    assert parse_voice_route_packet(packet) == VoiceRouteCommand(
+        action="transfer_to_thread",
+        thread_id="thr-1",
+        cwd="/tmp/project",
+        label="Project",
+        active_target_voice_id="voice-1",
+        active_target_voice_name="Dottie",
+    )
+
+
+def test_exit_to_dispatch_phrase_normalizes_exactly():
+    assert _normalize_spoken_command("Exit to dispatch.") == EXIT_TO_DISPATCH_PHRASE
+    assert (
+        _normalize_spoken_command("Exit,\n  to   dispatch.") == EXIT_TO_DISPATCH_PHRASE
+    )
+
+
+@pytest.mark.asyncio
+async def test_brain_score_audio_scorer_uploads_every_interval(tmp_path, monkeypatch):
+    uploads = []
+
+    async def fake_upload(**kwargs):
+        with wave.open(str(kwargs["wav_path"]), "rb") as wav_file:
+            uploads.append(
+                {
+                    "chunk_index": kwargs["chunk_index"],
+                    "duration_seconds": kwargs["duration_seconds"],
+                    "sample_rate": wav_file.getframerate(),
+                    "num_channels": wav_file.getnchannels(),
+                    "frames": wav_file.getnframes(),
+                    "token": kwargs["token"],
+                }
+            )
+
+    monkeypatch.setattr(livekit, "BRAIN_SCORE_ENABLED", True)
+    monkeypatch.setattr(livekit, "_load_brain_score_token", lambda: "token-1")
+    monkeypatch.setattr(livekit, "_upload_brain_score_chunk", fake_upload)
+
+    scorer = BrainScoreAudioScorer(
+        interval_seconds=0.02,
+        min_duration_seconds=0.02,
+        output_path=tmp_path / "brain_score.json",
+        endpoint="http://example.invalid/score",
+    )
+    scorer.push_frame(rtc.AudioFrame.create(48000, 1, 480))
+    assert uploads == []
+
+    scorer.push_frame(rtc.AudioFrame.create(48000, 1, 480))
+    await scorer.aclose()
+
+    assert uploads == [
+        {
+            "chunk_index": 1,
+            "duration_seconds": 0.02,
+            "sample_rate": 48000,
+            "num_channels": 1,
+            "frames": 960,
+            "token": "token-1",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_brain_score_audio_scorer_skips_chunks_below_min_duration(
+    tmp_path, monkeypatch
+):
+    uploads = []
+
+    async def fake_upload(**kwargs):
+        uploads.append(kwargs)
+
+    monkeypatch.setattr(livekit, "BRAIN_SCORE_ENABLED", True)
+    monkeypatch.setattr(livekit, "_load_brain_score_token", lambda: "token-1")
+    monkeypatch.setattr(livekit, "_upload_brain_score_chunk", fake_upload)
+
+    scorer = BrainScoreAudioScorer(
+        interval_seconds=0.02,
+        min_duration_seconds=0.03,
+        output_path=tmp_path / "brain_score.json",
+        endpoint="http://example.invalid/score",
+    )
+
+    scorer.push_frame(rtc.AudioFrame.create(48000, 1, 480))
+    scorer.push_frame(rtc.AudioFrame.create(48000, 1, 480))
+    await scorer.aclose()
+
+    assert uploads == []
+
+
+@pytest.mark.asyncio
+async def test_brain_score_audio_scorer_skips_chunks_during_cooldown(
+    tmp_path, monkeypatch
+):
+    uploads = []
+    score_path = tmp_path / "brain_score.json"
+    score_path.write_text(json.dumps({"updated_at": 1000.0}), encoding="utf-8")
+
+    async def fake_upload(**kwargs):
+        uploads.append(kwargs)
+
+    monkeypatch.setattr(livekit, "BRAIN_SCORE_ENABLED", True)
+    monkeypatch.setattr(livekit, "_load_brain_score_token", lambda: "token-1")
+    monkeypatch.setattr(livekit, "_upload_brain_score_chunk", fake_upload)
+    monkeypatch.setattr(livekit.time, "time", lambda: 1100.0)
+
+    scorer = BrainScoreAudioScorer(
+        interval_seconds=0.02,
+        min_duration_seconds=0.02,
+        cooldown_seconds=1800,
+        output_path=score_path,
+        endpoint="http://example.invalid/score",
+    )
+
+    scorer.push_frame(rtc.AudioFrame.create(48000, 1, 480))
+    scorer.push_frame(rtc.AudioFrame.create(48000, 1, 480))
+    await scorer.aclose()
+
+    assert uploads == []
+
+
+@pytest.mark.asyncio
+async def test_brain_score_audio_scorer_logs_schedule_failure_without_raising(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setattr(livekit, "BRAIN_SCORE_ENABLED", True)
+    scorer = BrainScoreAudioScorer(
+        interval_seconds=0.01,
+        min_duration_seconds=0,
+        cooldown_seconds=0,
+        output_path=tmp_path / "brain_score.json",
+        endpoint="http://example.invalid/score",
+    )
+
+    def fail_schedule(*, reason):
+        raise RuntimeError(f"schedule failed: {reason}")
+
+    monkeypatch.setattr(scorer, "_schedule_current_chunk", fail_schedule)
+    caplog.set_level(logging.WARNING, logger="openbase_coder_cli.livekit_agent.livekit")
+
+    scorer.push_frame(rtc.AudioFrame.create(48000, 1, 480))
+
+    assert any("brain_score stage=schedule_failed" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_upload_brain_score_chunk_logs_missing_score_without_writing(
+    tmp_path, monkeypatch, caplog
+):
+    wav_path = tmp_path / "chunk.wav"
+    wav_path.write_bytes(b"not-a-real-wav")
+    writes = []
+
+    class FakeResponse:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, exc_tb):
+            return None
+
+        async def text(self):
+            return json.dumps({"statusCode": 200, "message": "No score yet", "data": {}})
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, exc_tb):
+            return None
+
+        def post(self, *args, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(livekit.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(
+        livekit,
+        "_write_brain_score_json",
+        lambda path, payload: writes.append((path, payload)),
+    )
+    caplog.set_level(logging.WARNING, logger="openbase_coder_cli.livekit_agent.livekit")
+
+    await livekit._upload_brain_score_chunk(
+        wav_path=wav_path,
+        token="token-1",
+        endpoint="http://example.invalid/score",
+        output_path=tmp_path / "brain_score.json",
+        chunk_index=1,
+        duration_seconds=20,
+        sample_rate=24000,
+        num_channels=1,
+        reason="interval",
+    )
+
+    assert writes == []
+    assert not wav_path.exists()
+    assert any("brain_score stage=score_failed" in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "spoken",
+    [
+        "Exit to dispatch.",
+        "Please exit to dispatch now.",
+        "Please exit,\n  to   dispatch now.",
+        "To dispatch.",
+        "Send me to dispatch, please.",
+        "Two dispatch.",
+        "Take me two dispatch.",
+    ],
+)
+def test_exit_to_dispatch_command_accepts_short_variants(spoken):
+    assert _is_exit_to_dispatch_command(spoken)
+
+
+def test_exit_to_dispatch_command_rejects_embedded_variants():
+    assert not _is_exit_to_dispatch_command("dispatch")
+    assert not _is_exit_to_dispatch_command("please dispatch me")
+
+
+def test_direct_livekit_instruction_loader_priority(tmp_path):
+    explicit = tmp_path / "explicit.md"
+    default = tmp_path / "default.md"
+    explicit.write_text("explicit file instructions\n", encoding="utf-8")
+    default.write_text("default file instructions\n", encoding="utf-8")
+
+    assert (
+        load_direct_livekit_developer_instructions(
+            env={
+                DIRECT_LIVEKIT_INSTRUCTIONS_PATH_ENV: str(explicit),
+                DIRECT_LIVEKIT_INSTRUCTIONS_TEXT_ENV: "env text instructions",
+            },
+            default_path=default,
+        )
+        == "explicit file instructions"
+    )
+    assert (
+        load_direct_livekit_developer_instructions(
+            env={DIRECT_LIVEKIT_INSTRUCTIONS_TEXT_ENV: "env text instructions"},
+            default_path=default,
+        )
+        == "default file instructions"
+    )
+    assert (
+        load_direct_livekit_developer_instructions(
+            env={DIRECT_LIVEKIT_INSTRUCTIONS_TEXT_ENV: "env text instructions"},
+            default_path=tmp_path / "missing.md",
+        )
+        == "env text instructions"
+    )
+    assert (
+        load_direct_livekit_developer_instructions(
+            env={},
+            default_path=tmp_path / "missing.md",
+        )
+        == DIRECT_LIVEKIT_BUILTIN_DEVELOPER_INSTRUCTIONS
+    )
+
+
+def test_super_agent_voices_parse_named_and_legacy_configs():
+    named = livekit._super_agent_voices(
+        {"CARTESIA_SUPER_AGENT_VOICES": "voice-a:Alice, voice-b: Bob"}
+    )
+    assert [(voice.voice_id, voice.name) for voice in named] == [
+        ("voice-a", "Alice"),
+        ("voice-b", "Bob"),
+    ]
+
+    legacy = livekit._super_agent_voices(
+        {"CARTESIA_SUPER_AGENT_VOICE_IDS": "voice-a, voice-b"}
+    )
+    assert [(voice.voice_id, voice.name) for voice in legacy] == [
+        ("voice-a", "Voice 1"),
+        ("voice-b", "Voice 2"),
+    ]
+
+
+class FakeSpeechHandle:
+    def __init__(self, *, done: bool = False) -> None:
+        self._done = done
+        self.waited = False
+
+    def done(self) -> bool:
+        return self._done
+
+    async def wait_for_playout(self) -> None:
+        self.waited = True
+        self._done = True
+
+
+class FakeTTS:
+    def __init__(self) -> None:
+        self.closed = False
+        self.synthesized_texts = []
+
+    def synthesize(self, text: str):
+        self.synthesized_texts.append(text)
+        return FakeTTSStream()
+
+    def synthesize_with_voice(self, text: str, *, voice_id: str | None):
+        self.synthesized_texts.append(text)
+        return FakeTTSStream()
+
+    def resolve_voice_id(self, voice_id: str | None) -> str:
+        return voice_id or "announcer-default-voice"
+
+    def resolve_voice_name(self, voice_id: str | None) -> str | None:
+        return "Requested Voice" if voice_id else "Announcer"
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class FakeTTSStream:
+    def __init__(self) -> None:
+        self.pushed_texts = []
+        self.flushed = False
+        self.ended = False
+        self.closed = False
+
+    def push_text(self, token: str) -> None:
+        self.pushed_texts.append(token)
+
+    def flush(self) -> None:
+        self.flushed = True
+
+    def end_input(self) -> None:
+        self.ended = True
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+
+class RecordingCartesiaTTS:
+    created = []
+
+    def __init__(self, *, model, voice, api_key, volume):
+        self.model = model
+        self.provider = "Cartesia"
+        self.capabilities = object()
+        self.sample_rate = 24000
+        self.num_channels = 1
+        self.voice = voice
+        self.api_key = api_key
+        self.volume = volume
+        self.prewarmed = False
+        self.closed = False
+        self.stream_calls = 0
+        self.synthesize_calls = []
+        self.stream_instance = None
+        RecordingCartesiaTTS.created.append(self)
+
+    def synthesize(self, text: str, *, conn_options=None):
+        self.synthesize_calls.append(text)
+        return FakeTTSStream()
+
+    def stream(self, *, conn_options=None):
+        self.stream_calls += 1
+        self.stream_instance = FakeTTSStream()
+        return self.stream_instance
+
+    def prewarm(self) -> None:
+        self.prewarmed = True
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class FakeSession:
+    def __init__(self) -> None:
+        self.current = FakeSpeechHandle(done=False)
+        self.say_calls = []
+        self.say_handle = FakeSpeechHandle(done=False)
+
+    @property
+    def current_speech(self):
+        return self.current
+
+    def say(self, text, **kwargs):
+        self.say_calls.append((text, kwargs))
+        return self.say_handle
+
+
+def test_voice_selecting_tts_delegates_stream_to_active_voice(monkeypatch):
+    RecordingCartesiaTTS.created = []
+    active_voice_id = "voice-2"
+    monkeypatch.setattr(cartesia, "TTS", RecordingCartesiaTTS)
+    tts = VoiceSelectingCartesiaTTS(
+        default_voice_id="voice-1",
+        active_voice_id=lambda: active_voice_id,
+        api_key="key",
+    )
+
+    stream = tts.stream()
+    tts.prewarm()
+
+    stream.push_text("- Update README.md\n- Run uv")
+    stream.flush()
+
+    assert [created.voice for created in RecordingCartesiaTTS.created] == [
+        "voice-1",
+        "voice-2",
+    ]
+    assert [created.volume for created in RecordingCartesiaTTS.created] == [
+        DEFAULT_CARTESIA_TTS_VOLUME,
+        DEFAULT_CARTESIA_TTS_VOLUME,
+    ]
+    assert RecordingCartesiaTTS.created[1].stream_calls == 1
+    assert RecordingCartesiaTTS.created[1].prewarmed is True
+    assert RecordingCartesiaTTS.created[1].stream_instance.pushed_texts == [
+        "Item: Update read me dot M D. Item: Run U V."
+    ]
+
+
+def test_voice_selecting_tts_formats_synthesize_text(monkeypatch, caplog):
+    RecordingCartesiaTTS.created = []
+    monkeypatch.setattr(cartesia, "TTS", RecordingCartesiaTTS)
+    tts = VoiceSelectingCartesiaTTS(
+        default_voice_id="voice-1",
+        default_voice_name="Jacqueline",
+        active_voice_id=lambda: None,
+        api_key="key",
+    )
+
+    caplog.set_level(logging.INFO, logger="openbase_coder_cli.livekit_agent.livekit")
+    tts.synthesize("Run `uv run pytest` and update README.md")
+
+    assert RecordingCartesiaTTS.created[0].synthesize_calls == [
+        "Run U V run pytest and update read me dot M D."
+    ]
+    assert any(
+        "stage=tts_synthesize_start" in record.message
+        and "voice_id=voice-1" in record.message
+        and "voice_name=Jacqueline" in record.message
+        and "Run U V run pytest" in record.message
+        for record in caplog.records
+    )
+
+
+def test_voice_selecting_tts_logs_stream_voice_and_text(monkeypatch, caplog):
+    RecordingCartesiaTTS.created = []
+    monkeypatch.setattr(cartesia, "TTS", RecordingCartesiaTTS)
+    tts = VoiceSelectingCartesiaTTS(
+        default_voice_id="dispatcher-voice",
+        default_voice_name="Jacqueline",
+        active_voice_id=lambda: "agent-voice",
+        active_voice_name=lambda: "Alice",
+        api_key="key",
+    )
+
+    caplog.set_level(logging.INFO, logger="openbase_coder_cli.livekit_agent.livekit")
+    stream = tts.stream()
+    stream.push_text("Yes, I'm here.")
+    stream.flush()
+
+    assert any(
+        "stage=tts_stream_flush" in record.message
+        and "voice_id=agent-voice" in record.message
+        and "voice_name=Alice" in record.message
+        and "Yes, I'm here." in record.message
+        for record in caplog.records
+    )
+
+
+def test_voice_selecting_tts_logs_default_stream_voice_and_text(monkeypatch, caplog):
+    RecordingCartesiaTTS.created = []
+    monkeypatch.setattr(cartesia, "TTS", RecordingCartesiaTTS)
+    tts = VoiceSelectingCartesiaTTS(
+        default_voice_id="dispatcher-voice",
+        default_voice_name="Jacqueline",
+        active_voice_id=lambda: None,
+        api_key="key",
+    )
+
+    caplog.set_level(logging.INFO, logger="openbase_coder_cli.livekit_agent.livekit")
+    stream = tts.stream()
+    stream.push_text("Yes, I'm here.")
+    stream.flush()
+
+    assert any(
+        "stage=tts_stream_flush" in record.message
+        and "voice_id=dispatcher-voice" in record.message
+        and "voice_name=Jacqueline" in record.message
+        and "Yes, I'm here." in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_announcer_queue_waits_and_excludes_chat_context(caplog):
+    session = FakeSession()
+    fake_tts = FakeTTS()
+    queue = AnnouncerSpeechQueue(session=session, announcer_tts=fake_tts)
+
+    caplog.set_level(logging.INFO, logger="openbase_coder_cli.livekit_agent.livekit")
+    await queue._speak(
+        AnnouncerMessage(
+            message_id="announcer-1",
+            text="- Update README.md\n- Run uv",
+            voice_id="requested-voice",
+        )
+    )
+
+    assert session.current.waited is True
+    assert session.say_handle.waited is True
+    assert session.say_calls[0][0] == "Item: Update read me dot M D. Item: Run U V."
+    assert session.say_calls[0][1]["allow_interruptions"] is False
+    assert session.say_calls[0][1]["add_to_chat_ctx"] is False
+    assert session.say_calls[0][1]["audio"] is not None
+    assert any(
+        "stage=announcer_say_start" in record.message
+        and "voice_id=requested-voice" in record.message
+        and "voice_name=Requested Voice" in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_announcer_queue_plays_audio_file_without_chat_context(
+    tmp_path, monkeypatch
+):
+    audio_path = tmp_path / "done.wav"
+    audio_path.write_bytes(b"not decoded in this test")
+    session = FakeSession()
+    queue = AnnouncerSpeechQueue(session=session, announcer_tts=FakeTTS())
+
+    async def fake_audio_file_frames(path):
+        assert path == audio_path
+        if False:
+            yield None
+
+    monkeypatch.setattr(queue, "_audio_file_frames", fake_audio_file_frames)
+
+    await queue._speak(
+        AnnouncerAudioMessage(
+            message_id="announcer-audio-1",
+            audio_path=str(audio_path),
+        )
+    )
+
+    assert session.current.waited is True
+    assert session.say_handle.waited is True
+    assert session.say_calls[0][0] == ""
+    assert session.say_calls[0][1]["allow_interruptions"] is False
+    assert session.say_calls[0][1]["add_to_chat_ctx"] is False
+    assert session.say_calls[0][1]["audio"] is not None
+
+
+class PreparedClient(CodexAppServerClient):
+    def __init__(self):
+        super().__init__(ws_url="ws://example.invalid", cwd="/tmp")
+        self.persisted_routes = []
+
+    async def prepare(self) -> str:
+        return "dispatcher-1"
+
+    def persist_voice_route(self, **kwargs) -> None:
+        self.persisted_routes.append(kwargs)
+
+
+@pytest.mark.asyncio
+async def test_voice_router_transfers_to_prepared_target(monkeypatch, tmp_path):
+    dispatcher = PreparedClient()
+    prepared = []
+    monkeypatch.setattr(
+        livekit,
+        "DEFAULT_DIRECT_LIVEKIT_INSTRUCTIONS_PATH",
+        tmp_path / "missing-direct-instructions.md",
+    )
+    monkeypatch.setattr(
+        livekit,
+        "CARTESIA_SUPER_AGENT_VOICES",
+        (
+            livekit.CartesiaVoice("voice-a", "Alice"),
+            livekit.CartesiaVoice("voice-b", "Bob"),
+        ),
+    )
+    monkeypatch.setattr(
+        livekit, "CARTESIA_SUPER_AGENT_VOICE_IDS", ("voice-a", "voice-b")
+    )
+
+    async def fake_prepare(self):
+        prepared.append(
+            (
+                self._thread_id,
+                self._cwd,
+                self._developer_instructions,
+                self._super_agent_name,
+            )
+        )
+        return self._thread_id
+
+    monkeypatch.setattr(CodexAppServerClient, "prepare", fake_prepare)
+
+    router = LiveKitVoiceRouter(dispatcher)
+    await router.transfer_to_thread(
+        thread_id="target-1",
+        cwd="/tmp/project",
+        label="Project",
+    )
+
+    assert prepared == [
+        (
+            "target-1",
+            "/tmp/project",
+            None,
+            "Project",
+        )
+    ]
+    assert router.active_client is not dispatcher
+    await router.transfer_to_thread(
+        thread_id="target-1",
+        cwd="/tmp/project",
+        label="Renamed Project",
+    )
+    assert prepared[-1] == (
+        "target-1",
+        "/tmp/project",
+        None,
+        "Renamed Project",
+    )
+    assert dispatcher.persisted_routes[-1] == {
+        "active_target_thread_id": "target-1",
+        "active_target_kind": "codex_thread",
+        "active_target_label": "Renamed Project",
+        "active_target_voice_id": stable_super_agent_voice_id(
+            "target-1", "Renamed Project"
+        ),
+        "active_target_voice_name": livekit.stable_super_agent_voice(
+            "target-1", "Renamed Project"
+        ).name,
+    }

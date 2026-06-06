@@ -1,0 +1,46 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from openbase_coder_cli.paths import CONSOLE_SETTINGS_JSON_PATH
+
+
+def get_ignored_launchctl_labels() -> list[str]:
+    data = _read_settings()
+    labels = data.get("ignored_launchctl_labels")
+    if not isinstance(labels, list):
+        return []
+    return sorted(
+        {label for label in labels if isinstance(label, str) and label.strip()}
+    )
+
+
+def set_ignored_launchctl_labels(labels: list[str]) -> list[str]:
+    normalized = sorted(
+        {label.strip() for label in labels if isinstance(label, str) and label.strip()}
+    )
+    data = _read_settings()
+    data["ignored_launchctl_labels"] = normalized
+    _write_settings(data)
+    return normalized
+
+
+def _read_settings() -> dict:
+    try:
+        data = json.loads(CONSOLE_SETTINGS_JSON_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def _write_settings(data: dict) -> None:
+    CONSOLE_SETTINGS_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = Path(f"{CONSOLE_SETTINGS_JSON_PATH}.tmp")
+    tmp_path.write_text(
+        json.dumps(data, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    tmp_path.replace(CONSOLE_SETTINGS_JSON_PATH)

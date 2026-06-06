@@ -1,0 +1,420 @@
+from __future__ import annotations
+
+import platform
+import secrets
+import shlex
+import subprocess
+from pathlib import Path
+from shutil import which
+
+import click
+from multi.api import sync_workspace
+
+from openbase_coder_cli.cli.node import run_workspace_package_command
+from openbase_coder_cli.paths import (
+    CODEX_AGENTS_MD_PATH,
+    CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH,
+    CODEX_DISPATCHER_INSTRUCTIONS_PATH,
+    CODEX_HOME_DIR,
+    CODEX_SUPER_AGENT_INSTRUCTIONS_PATH,
+    DEFAULT_ENV_FILE_PATH,
+    DEFAULT_WORKSPACE_DIR,
+    OPENBASE_BASE_DIR,
+)
+from openbase_coder_cli.services.installation import InstallationConfig
+from openbase_coder_cli.services.launchd import install_all_services
+
+WORKSPACE_REPO = "https://github.com/openbase-community/openbase-coder-workspace.git"
+WORKSPACE_INSTALL_SET = "default"
+CODEX_HOME_DEFAULT_SOURCE_DIR = "instructions"
+CODEX_HOME_SKILLS_SOURCE_DIR = "skills"
+CODEX_HOME_DEFAULT_FILES = (
+    ("AGENTS.md", CODEX_AGENTS_MD_PATH),
+    ("VOICE_INSTRUCTIONS.md", CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH),
+    ("DISPATCHER_INSTRUCTIONS.md", CODEX_DISPATCHER_INSTRUCTIONS_PATH),
+    ("SUPER_AGENT_INSTRUCTIONS.md", CODEX_SUPER_AGENT_INSTRUCTIONS_PATH),
+)
+
+
+@click.command()
+@click.option(
+    "--workspace-dir",
+    type=click.Path(),
+    default=str(DEFAULT_WORKSPACE_DIR),
+    show_default=True,
+    help="Override clone location for the workspace.",
+)
+@click.option(
+    "--env-file",
+    type=click.Path(),
+    default=str(DEFAULT_ENV_FILE_PATH),
+    show_default=True,
+    help="Override .env file location.",
+)
+@click.option(
+    "--assembly-ai-api-key",
+    envvar="ASSEMBLY_AI_API_KEY",
+    default="",
+    help="AssemblyAI API key for speech-to-text.",
+)
+@click.option(
+    "--cartesia-api-key",
+    envvar="CARTESIA_API_KEY",
+    default="",
+    help="Cartesia API key for text-to-speech.",
+)
+@click.option(
+    "--skip-clone",
+    is_flag=True,
+    help="Skip git clone step.",
+)
+@click.option(
+    "--skip-services",
+    is_flag=True,
+    help="Skip launchd service installation.",
+)
+def setup(
+    workspace_dir: str,
+    env_file: str,
+    assembly_ai_api_key: str,
+    cartesia_api_key: str,
+    skip_clone: bool,
+    skip_services: bool,
+) -> None:
+    """Full install flow for Openbase Coder."""
+    if platform.system() != "Darwin":
+        raise click.ClickException("Setup is only supported on macOS.")
+
+    OPENBASE_BASE_DIR.mkdir(parents=True, exist_ok=True)
+
+    # --- Clone workspace ---
+    if not skip_clone:
+        _clone_workspace(workspace_dir)
+
+    # --- Write installation.json ---
+    config = InstallationConfig(
+        workspace_path=workspace_dir,
+        env_file=env_file,
+    )
+    config.save()
+    click.echo("Wrote installation.json")
+
+    # --- Generate .env ---
+    _ensure_env_file(
+        env_file,
+        assembly_ai_api_key=assembly_ai_api_key,
+        cartesia_api_key=cartesia_api_key,
+    )
+
+    # --- Symlink Codex auth into the service CODEX_HOME ---
+    _symlink_codex_auth()
+    _ensure_codex_home_default_files(workspace_dir)
+    _symlink_codex_home_skills(workspace_dir)
+
+    # --- Initialize CLI workspace ---
+    _init_cli_workspace(workspace_dir)
+
+    # --- Install/update user-facing CLI shim ---
+    _install_cli_shim(workspace_dir)
+
+    # --- Build console ---
+    _build_console(workspace_dir)
+
+    # --- Install services ---
+    if not skip_services:
+        click.echo()
+        click.echo("Installing launchd services...")
+        install_all_services(config)
+    else:
+        click.echo("Skipped service installation (--skip-services).")
+
+    click.echo()
+    click.echo("Setup complete.")
+    click.echo()
+    click.echo(
+        "To enable remote authentication, run 'openbase-coder login' "
+        "and ensure OPENBASE_CODER_CLI_WEB_BACKEND_URL is set in your .env."
+    )
+
+
+def _clone_workspace(workspace_dir: str) -> None:
+    ws = Path(workspace_dir)
+    if ws.exists() and (ws / ".git").is_dir():
+        click.echo(f"Workspace already exists at {ws}, pulling latest...")
+        subprocess.run(["git", "-C", str(ws), "pull", "--ff-only"], check=True)
+        _multi_sync(ws)
+        return
+
+    click.echo(f"Cloning workspace to {ws}...")
+    subprocess.run(
+        ["git", "clone", WORKSPACE_REPO, str(ws)],
+        check=True,
+    )
+    _multi_sync(ws)
+
+
+def _multi_sync(ws_path: Path) -> None:
+    click.echo(f"Running multi sync --install-set {WORKSPACE_INSTALL_SET}...")
+    sync_workspace(ws_path, install_set=WORKSPACE_INSTALL_SET)
+
+
+def _build_console(workspace_dir: str) -> None:
+    console_dir = Path(workspace_dir) / "console"
+    if not console_dir.is_dir():
+        click.echo(f"Console directory not found at {console_dir}, skipping build.")
+        return
+
+    click.echo("Building console...")
+    workspace_path = Path(workspace_dir)
+    if not run_workspace_package_command(workspace_path, console_dir, "install"):
+        return
+
+    run_workspace_package_command(workspace_path, console_dir, "run", "build")
+    click.echo("Console build complete.")
+
+
+def _symlink_codex_auth() -> None:
+    """Point the service CODEX_HOME at the user's normal Codex login."""
+    codex_auth = Path.home() / ".codex" / "auth.json"
+    service_auth = CODEX_HOME_DIR / "auth.json"
+
+    CODEX_HOME_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not codex_auth.is_file():
+        click.echo(
+            f"Codex auth not found at {codex_auth}; run 'codex login' before "
+            "using voice Codex services."
+        )
+        return
+
+    if service_auth.is_symlink():
+        if service_auth.resolve() == codex_auth.resolve():
+            click.echo(f"Codex service auth already linked to {codex_auth}")
+            return
+        service_auth.unlink()
+    elif service_auth.exists():
+        try:
+            auth_matches = service_auth.read_bytes() == codex_auth.read_bytes()
+        except OSError:
+            auth_matches = False
+        if not auth_matches:
+            click.echo(
+                f"Codex service auth already exists at {service_auth} and differs "
+                f"from {codex_auth}; leaving it unchanged."
+            )
+            return
+        service_auth.unlink()
+
+    service_auth.symlink_to(codex_auth)
+    click.echo(f"Symlinked Codex service auth → {codex_auth}")
+
+
+def _ensure_codex_home_default_files(workspace_dir: str) -> None:
+    """Create missing Openbase Codex home instruction files."""
+    CODEX_HOME_DIR.mkdir(parents=True, exist_ok=True)
+    defaults_dir = Path(workspace_dir) / CODEX_HOME_DEFAULT_SOURCE_DIR
+
+    for resource_name, target_path in CODEX_HOME_DEFAULT_FILES:
+        if target_path.exists():
+            click.echo(f"Codex home default already exists at {target_path}")
+            continue
+
+        source_path = defaults_dir / resource_name
+        if not source_path.is_file():
+            click.echo(f"Codex home default source not found at {source_path}")
+            continue
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(
+            source_path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        click.echo(f"Created Codex home default at {target_path}")
+
+
+def _symlink_codex_home_skills(workspace_dir: str) -> None:
+    """Symlink workspace-owned skills into the Openbase Codex home."""
+    source_root = Path(workspace_dir) / CODEX_HOME_SKILLS_SOURCE_DIR
+    skill_sources = _workspace_skill_sources(source_root)
+    if not skill_sources:
+        click.echo(f"No workspace skills found at {source_root}")
+        return
+
+    target_root = CODEX_HOME_DIR / "skills"
+    target_root.mkdir(parents=True, exist_ok=True)
+
+    for source_path in skill_sources:
+        target_path = target_root / source_path.name
+        if target_path.is_symlink():
+            if target_path.resolve() == source_path.resolve():
+                click.echo(f"Codex home skill already linked at {target_path}")
+                continue
+            target_path.unlink()
+        elif target_path.exists():
+            click.echo(
+                f"Codex home skill already exists at {target_path}; "
+                "leaving it unchanged."
+            )
+            continue
+
+        target_path.symlink_to(source_path)
+        click.echo(f"Linked Codex home skill {target_path} → {source_path}")
+
+
+def _workspace_skill_sources(source_root: Path) -> list[Path]:
+    candidate_roots = [source_root / "skills", source_root]
+    seen: set[Path] = set()
+    sources: list[Path] = []
+
+    for candidate_root in candidate_roots:
+        if not candidate_root.is_dir():
+            continue
+        for child in sorted(candidate_root.iterdir(), key=lambda path: path.name):
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            if (child / "SKILL.md").is_file():
+                resolved = child.resolve()
+                if resolved not in seen:
+                    seen.add(resolved)
+                    sources.append(child)
+
+    return sources
+
+
+def _init_cli_workspace(workspace_dir: str) -> None:
+    """Initialize the CLI checkout that now hosts the LiveKit worker."""
+    cli_dir = Path(workspace_dir) / "cli"
+    if not cli_dir.is_dir():
+        click.echo("CLI directory not found, skipping worker init.")
+        return
+
+    uv_bin = which("uv")
+    if not uv_bin:
+        click.echo("'uv' not found on PATH, skipping CLI workspace init.")
+        return
+
+    click.echo("Initializing CLI workspace...")
+
+    # Create venv and install dependencies
+    click.echo("  Running uv sync...")
+    subprocess.run([uv_bin, "sync"], cwd=str(cli_dir), check=True)
+
+    # Download LiveKit model files (STT, VAD, etc.)
+    click.echo("  Downloading LiveKit model files...")
+    subprocess.run(
+        [
+            uv_bin,
+            "run",
+            "python",
+            "-m",
+            "openbase_coder_cli.livekit_agent.livekit",
+            "download-files",
+        ],
+        cwd=str(cli_dir),
+        check=True,
+    )
+
+    click.echo("CLI workspace initialization complete.")
+
+
+def _install_cli_shim(workspace_dir: str) -> None:
+    """Install a stable user command that runs the workspace checkout."""
+    uv_bin = which("uv")
+    if not uv_bin:
+        click.echo("'uv' not found on PATH, skipping CLI shim install.")
+        return
+
+    cli_dir = Path(workspace_dir) / "cli"
+    if not cli_dir.is_dir():
+        click.echo(f"CLI directory not found at {cli_dir}, skipping CLI shim install.")
+        return
+
+    user_bin = Path.home() / ".local" / "bin"
+    user_bin.mkdir(parents=True, exist_ok=True)
+    shim_path = user_bin / "openbase-coder"
+    if shim_path.is_symlink():
+        shim_path.unlink()
+    shim = (
+        "#!/bin/sh\n"
+        f"cd {shlex.quote(str(cli_dir))} || exit 1\n"
+        f"exec {shlex.quote(uv_bin)} run openbase-coder \"$@\"\n"
+    )
+    shim_path.write_text(shim)
+    shim_path.chmod(0o755)
+    click.echo(f"Installed openbase-coder shim at {shim_path}")
+
+
+def _ensure_env_file(
+    env_file: str,
+    *,
+    assembly_ai_api_key: str,
+    cartesia_api_key: str,
+) -> None:
+    path = Path(env_file)
+    if path.is_file():
+        click.echo(f".env already exists at {path}, leaving unchanged.")
+        return
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    secret_key = secrets.token_urlsafe(50)
+    livekit_api_key = "APIkey" + secrets.token_urlsafe(12)
+    livekit_api_secret = secrets.token_urlsafe(32)
+
+    lines = [
+        f"OPENBASE_CODER_CLI_SECRET_KEY={secret_key}",
+        f"LIVEKIT_API_KEY={livekit_api_key}",
+        f"LIVEKIT_API_SECRET={livekit_api_secret}",
+        "# Use tailscale for phone-to-computer voice calls; use local for loopback-only testing.",
+        "LIVEKIT_NETWORK_MODE=tailscale",
+        "LIVEKIT_URL=ws://localhost:7880",
+        "# In tailscale mode, launchd rewrites localhost LIVEKIT_URL to the Tailscale IPv4 address.",
+        "# The local Python agent still registers over localhost unless LIVEKIT_AGENT_URL is set.",
+        "# LIVEKIT_AGENT_URL=ws://localhost:7880",
+        "# Override the Tailscale IP LiveKit advertises in ICE candidates.",
+        "# If unset in tailscale mode, the launchd service uses the first `tailscale ip -4` value.",
+        "# LIVEKIT_NODE_IP=100.x.y.z",
+        "# Override the Tailscale interface used for LiveKit media.",
+        "# If unset, the launchd service derives it from LIVEKIT_NODE_IP.",
+        "# LIVEKIT_INTERFACE=utun4",
+        "# Override the address LiveKit binds locally. Keep this on localhost when using Tailscale Serve.",
+        "# LIVEKIT_BIND_IP=127.0.0.1",
+        "# Override the LiveKit agent health/control listener. Keep this on localhost.",
+        "# LIVEKIT_AGENT_HOST=127.0.0.1",
+        "# Override the LiveKit TCP media fallback port.",
+        "# LIVEKIT_TCP_PORT=7881",
+        "# Override the LiveKit UDP media port.",
+        "# LIVEKIT_UDP_PORT=7882",
+        "# Override the CLI API listener. Keep this on localhost when using Tailscale Serve.",
+        "# OPENBASE_CODER_CLI_HOST=127.0.0.1",
+        "# Allow localhost and Tailscale Serve hostnames.",
+        "OPENBASE_CODER_CLI_ALLOWED_HOSTS=localhost,127.0.0.1,.ts.net",
+        "# Codex app-server defaults used by the launchd service.",
+        "CODEX_MODEL=gpt-5.5",
+        "CODEX_MODEL_REASONING_EFFORT=high",
+        "CODEX_SERVICE_TIER=fast",
+        "CODEX_APP_SERVER_URL=ws://127.0.0.1:4500",
+        "LIVEKIT_CODEX_THREAD_CWD=~",
+        "# Cartesia voice used by the LiveKit agent TTS.",
+        "CARTESIA_VOICE_ID=9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",
+        "# Optional comma-separated voices for direct thread routing: voice-id:Display Name.",
+        "# CARTESIA_SUPER_AGENT_VOICES=f786b574-daa5-4673-aa0c-cbe3e8534c02:Alice",
+        "OPENBASE_CODER_CLI_OAUTH_CLIENT_ID=openbase-coder-cli",
+    ]
+
+    if assembly_ai_api_key:
+        lines.append(f"ASSEMBLY_AI_API_KEY={assembly_ai_api_key}")
+    if cartesia_api_key:
+        lines.append(f"CARTESIA_API_KEY={cartesia_api_key}")
+
+    lines.extend(
+        [
+            "# Override the web backend URL (defaults to https://app.openbase.cloud):",
+            "# OPENBASE_CODER_CLI_WEB_BACKEND_URL=https://app.openbase.cloud",
+            "# Override JWT key/session endpoints if your backend routes differ:",
+            "# OPENBASE_CODER_CLI_JWT_JWKS_URL=https://app.openbase.cloud/.well-known/jwks.json",
+            "# OPENBASE_CODER_CLI_JWT_AUTH_SESSION_URL=https://app.openbase.cloud/_allauth/app/v1/auth/session",
+        ]
+    )
+
+    path.write_text("\n".join(lines) + "\n")
+    click.echo(f"Generated .env at {path}")

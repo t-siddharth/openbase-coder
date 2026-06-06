@@ -1,0 +1,270 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+from pathlib import Path
+from typing import Any
+
+import click
+from super_agents.app_server_client import CodexAppServerClient
+
+REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
+SANDBOX_TYPES = ("readOnly", "workspaceWrite", "dangerFullAccess")
+MODES = ("default", "plan")
+
+
+def _json_echo(value: dict[str, Any]) -> None:
+    click.echo(json.dumps(value, indent=2, sort_keys=True))
+
+
+def _run_client(coro):
+    async def runner():
+        client = CodexAppServerClient()
+        try:
+            return await coro(client)
+        finally:
+            await client.close()
+
+    try:
+        return asyncio.run(runner())
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from None
+
+
+def _validate_time(value: str) -> str:
+    parts = value.split(":")
+    if len(parts) != 2:
+        raise click.BadParameter("Use HH:MM in 24-hour time.")
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        raise click.BadParameter("Use HH:MM in 24-hour time.") from None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise click.BadParameter("Use HH:MM in 24-hour time.")
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _routine_patch(
+    *,
+    name: str,
+    prompt: str | None = None,
+    schedule_time: str | None = None,
+    timezone: str | None = None,
+    enabled: bool | None = None,
+    target_name: str | None = None,
+    thread_id: str | None = None,
+    cwd: Path | None = None,
+    approval_policy: str | None = None,
+    sandbox_type: str | None = None,
+    mode: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    service_tier: str | None = None,
+    developer_instructions: str | None = None,
+    include_defaults: bool = False,
+) -> dict[str, Any]:
+    patch: dict[str, Any] = {"name": name}
+    if prompt is not None:
+        patch["prompt"] = prompt
+    if schedule_time is not None:
+        patch["time"] = _validate_time(schedule_time)
+    if timezone:
+        patch["timezone"] = timezone
+    if enabled is not None:
+        patch["enabled"] = enabled
+    if target_name:
+        patch["targetName"] = target_name
+    if thread_id:
+        patch["threadId"] = thread_id
+    if cwd is not None:
+        patch["cwd"] = str(cwd.expanduser().resolve())
+    if approval_policy or include_defaults:
+        patch["approvalPolicy"] = approval_policy or "never"
+    if sandbox_type or include_defaults:
+        patch["sandboxType"] = sandbox_type or "dangerFullAccess"
+    if mode or include_defaults:
+        patch["mode"] = mode or "default"
+    if model:
+        patch["model"] = model
+    if reasoning_effort:
+        patch["reasoningEffort"] = reasoning_effort
+    if service_tier:
+        patch["serviceTier"] = service_tier
+    if developer_instructions is not None:
+        patch["developerInstructions"] = developer_instructions
+    return patch
+
+
+@click.group()
+def routines() -> None:
+    """Manage Super Agents routines stored outside the MCP tool surface."""
+
+
+@routines.command("list")
+def list_routines() -> None:
+    """List persisted routines."""
+    _json_echo(_run_client(lambda client: client.list_routines()))
+
+
+@routines.command("show")
+@click.argument("name")
+def show_routine(name: str) -> None:
+    """Show one persisted routine."""
+    _json_echo(_run_client(lambda client: client.read_routine(name)))
+
+
+@routines.command("create")
+@click.argument("name")
+@click.option("--prompt", required=True, help="Prompt to send when the routine runs.")
+@click.option("--time", "schedule_time", required=True, help="Daily HH:MM local time.")
+@click.option("--timezone", default="America/New_York", show_default=True)
+@click.option("--target-name", help="Existing Super Agents thread name to target.")
+@click.option("--thread-id", help="Existing Codex app-server thread id to target.")
+@click.option("--cwd", type=click.Path(path_type=Path, file_okay=False))
+@click.option("--approval-policy", default="never", show_default=True)
+@click.option("--sandbox-type", type=click.Choice(SANDBOX_TYPES), default="dangerFullAccess", show_default=True)
+@click.option("--mode", type=click.Choice(MODES), default="default", show_default=True)
+@click.option("--model")
+@click.option("--reasoning-effort", type=click.Choice(REASONING_EFFORTS))
+@click.option("--service-tier")
+@click.option("--developer-instructions")
+@click.option("--disabled", is_flag=True, help="Create the routine disabled.")
+def create_routine(
+    name: str,
+    prompt: str,
+    schedule_time: str,
+    timezone: str,
+    target_name: str | None,
+    thread_id: str | None,
+    cwd: Path | None,
+    approval_policy: str,
+    sandbox_type: str,
+    mode: str,
+    model: str | None,
+    reasoning_effort: str | None,
+    service_tier: str | None,
+    developer_instructions: str | None,
+    disabled: bool,
+) -> None:
+    """Create or replace a routine."""
+    patch = _routine_patch(
+        name=name,
+        prompt=prompt,
+        schedule_time=schedule_time,
+        timezone=timezone,
+        enabled=not disabled,
+        target_name=target_name,
+        thread_id=thread_id,
+        cwd=cwd,
+        approval_policy=approval_policy,
+        sandbox_type=sandbox_type,
+        mode=mode,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        service_tier=service_tier,
+        developer_instructions=developer_instructions,
+        include_defaults=True,
+    )
+    _json_echo(_run_client(lambda client: client.save_routine(patch)))
+
+
+@routines.command("update")
+@click.argument("name")
+@click.option("--prompt")
+@click.option("--time", "schedule_time", help="Daily HH:MM local time.")
+@click.option("--timezone")
+@click.option("--enable", "enabled", flag_value=True, default=None)
+@click.option("--disable", "enabled", flag_value=False)
+@click.option("--target-name")
+@click.option("--thread-id")
+@click.option("--cwd", type=click.Path(path_type=Path, file_okay=False))
+@click.option("--approval-policy")
+@click.option("--sandbox-type", type=click.Choice(SANDBOX_TYPES))
+@click.option("--mode", type=click.Choice(MODES))
+@click.option("--model")
+@click.option("--reasoning-effort", type=click.Choice(REASONING_EFFORTS))
+@click.option("--service-tier")
+@click.option("--developer-instructions")
+def update_routine(
+    name: str,
+    prompt: str | None,
+    schedule_time: str | None,
+    timezone: str | None,
+    enabled: bool | None,
+    target_name: str | None,
+    thread_id: str | None,
+    cwd: Path | None,
+    approval_policy: str | None,
+    sandbox_type: str | None,
+    mode: str | None,
+    model: str | None,
+    reasoning_effort: str | None,
+    service_tier: str | None,
+    developer_instructions: str | None,
+) -> None:
+    """Update fields on a routine."""
+    patch = _routine_patch(
+        name=name,
+        prompt=prompt,
+        schedule_time=schedule_time,
+        timezone=timezone,
+        enabled=enabled,
+        target_name=target_name,
+        thread_id=thread_id,
+        cwd=cwd,
+        approval_policy=approval_policy,
+        sandbox_type=sandbox_type,
+        mode=mode,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        service_tier=service_tier,
+        developer_instructions=developer_instructions,
+    )
+    _json_echo(_run_client(lambda client: client.save_routine(patch)))
+
+
+@routines.command("delete")
+@click.argument("name")
+def delete_routine(name: str) -> None:
+    """Delete one routine."""
+    _json_echo(_run_client(lambda client: client.delete_routine(name)))
+
+
+@routines.command("run-due")
+@click.option("--name", help="Only run the named routine.")
+@click.option("--force", is_flag=True, help="Run the named routine even when it is not due.")
+def run_due_routines(name: str | None, force: bool) -> None:
+    """Run routines that are currently due."""
+    _json_echo(_run_client(lambda client: client.run_due_routines(name=name, force=force)))
+
+
+@routines.command("run-loop")
+@click.option("--interval", default=60.0, show_default=True, type=float)
+@click.option("--verbose", is_flag=True)
+def run_loop(interval: float, verbose: bool) -> None:
+    """Poll forever and run due routines."""
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(levelname)s %(asctime)s %(name)s %(message)s",
+    )
+    logger = logging.getLogger(__name__)
+    poll_interval = max(interval, 1.0)
+    logger.info("routine_runner service_started interval=%s", poll_interval)
+    while True:
+        started = time.monotonic()
+        try:
+            result = _run_client(lambda client: client.run_due_routines())
+            logger.info(
+                "routine_runner sweep_complete count=%s results=%s",
+                result.get("count"),
+                json.dumps(result.get("results", []), sort_keys=True),
+            )
+        except click.ClickException:
+            logger.exception("routine_runner sweep_failed")
+        elapsed = time.monotonic() - started
+        time.sleep(max(poll_interval - elapsed, 1.0))

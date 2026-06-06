@@ -1,0 +1,1 @@
+`openbase-coder-cli` is a CLI tool.

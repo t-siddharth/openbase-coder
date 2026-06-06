@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Coder CLI Server",
+            "consoleName": "Coder CLI Server",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": "openbase_coder_cli.config.asgi:application --host 0.0.0.0 --port 7999 --reload",
+            "django": true,
+            "justMyCode": false,
+            "env": {
+                "DEBUG": "1",
+                "ALLOWED_HOSTS": "0.0.0.0"
+            }
+        }
+    ]
+}

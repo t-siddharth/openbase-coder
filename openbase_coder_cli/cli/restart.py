@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+import click
+
+from openbase_coder_cli.services.restart import (
+    DEFAULT_RESTART_DELAY_SECONDS,
+    RestartRequest,
+    restart_target_names,
+    schedule_restart,
+)
+
+
+@click.command("restart")
+@click.option(
+    "--service",
+    type=click.Choice(restart_target_names()),
+    help="Restart exactly one Openbase-managed service.",
+)
+@click.option(
+    "--delay",
+    type=float,
+    default=DEFAULT_RESTART_DELAY_SECONDS,
+    show_default=True,
+    help="Seconds to wait before restarting.",
+)
+@click.option(
+    "--recreate-dispatcher",
+    is_flag=True,
+    help="Recreate the dispatcher thread during restart.",
+)
+def restart(service: str | None, delay: float, recreate_dispatcher: bool) -> None:
+    """Restart Openbase-managed services."""
+    request = RestartRequest(
+        services=(service,) if service else (),
+        recreate_dispatcher=recreate_dispatcher,
+        delay_seconds=delay,
+    )
+    plan = schedule_restart(request)
+
+    if service:
+        click.echo(f"Scheduled restart for {service} in {plan.delay_seconds:g}s.")
+    else:
+        click.echo(
+            f"Scheduled restart for all Openbase-managed services in {plan.delay_seconds:g}s."
+        )
+    if plan.recreate_dispatcher:
+        click.echo("Dispatcher thread will be recreated.")

@@ -1,0 +1,672 @@
+"""LiveKit voice, routing, and token API views."""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+import uuid
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import livekit.api as livekit_api
+from asgiref.sync import async_to_sync
+from django.utils import timezone
+from rest_framework import serializers, status
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+
+from openbase_coder_cli.cartesia_voice_catalog import (
+    cartesia_voice_catalog_payload,
+    cartesia_voice_for_name,
+)
+from openbase_coder_cli.dispatcher_config import dispatcher_voice, set_dispatcher_voice
+from openbase_coder_cli.livekit_announcer import (
+    MAX_ANNOUNCER_TEXT_LENGTH,
+    SUPPORTED_AUDIO_EXTENSIONS,
+    AnnouncerError,
+    AnnouncerValidationError,
+    NoActiveLiveKitRoomError,
+    _build_livekit_client,
+    _resolve_target_room,
+    publish_announcer_audio_file,
+    publish_announcer_message,
+)
+from openbase_coder_cli.livekit_voice_history import (
+    UnknownAgentVoiceError,
+    get_voice_history_entry_for_agent_name,
+    voice_history_debug_snapshot,
+)
+from openbase_coder_cli.livekit_voice_route import (
+    VoiceRouteBlockedError,
+    VoiceRouteError,
+    get_livekit_voice_route_state,
+    live_target_transfer_blocker,
+    publish_exit_to_dispatch,
+    publish_transfer_to_thread,
+    super_agent_voice_for_context,
+)
+from openbase_coder_cli.mcp.session_manager import get_session_manager
+from openbase_coder_cli.openbase_coder_cli_app.common import _request_identity
+
+logger = logging.getLogger(__name__)
+
+LIVEKIT_COMPANION_IDENTITY = "openbase-screen-share-companion"
+LIVEKIT_COMPANION_NAME = "Openbase Screen Share"
+LIVEKIT_COMPANION_TOKEN_TTL = timedelta(hours=1)
+
+
+class LiveKitRoomTokenSerializer(serializers.Serializer):
+    room_name = serializers.CharField(required=False, allow_blank=True)
+    livekit_dispatch_agent_name = serializers.CharField()
+
+
+class LiveKitCompanionSessionSerializer(serializers.Serializer):
+    room_name = serializers.CharField(required=False, allow_blank=True)
+
+
+class AnnouncerSaySerializer(serializers.Serializer):
+    agent_name = serializers.CharField(
+        trim_whitespace=True,
+        max_length=256,
+    )
+    text = serializers.CharField(
+        trim_whitespace=True,
+        max_length=MAX_ANNOUNCER_TEXT_LENGTH,
+    )
+    room_name = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        trim_whitespace=True,
+    )
+
+
+class AnnouncerPlaySerializer(serializers.Serializer):
+    audio_path = serializers.CharField(
+        trim_whitespace=True,
+        max_length=4096,
+    )
+    room_name = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        trim_whitespace=True,
+    )
+
+    def validate_audio_path(self, value: str) -> str:
+        path = Path(value).expanduser()
+        if not path.is_file():
+            raise serializers.ValidationError("Audio file not found.")
+        if path.suffix.lower() not in SUPPORTED_AUDIO_EXTENSIONS:
+            supported = ", ".join(SUPPORTED_AUDIO_EXTENSIONS)
+            raise serializers.ValidationError(
+                f"Unsupported audio file extension. Supported: {supported}."
+            )
+        return str(path.resolve())
+
+
+class VoiceRouteCommandSerializer(serializers.Serializer):
+    room_name = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        trim_whitespace=True,
+    )
+
+
+class VoiceRouteTransferSerializer(VoiceRouteCommandSerializer):
+    thread_id = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        trim_whitespace=True,
+    )
+    agent_name = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        trim_whitespace=True,
+    )
+    label = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        trim_whitespace=True,
+    )
+
+    def validate(self, attrs):
+        if not attrs.get("thread_id") and not attrs.get("agent_name"):
+            raise serializers.ValidationError("thread_id or agent_name is required.")
+        return attrs
+
+
+class DispatcherVoiceSerializer(serializers.Serializer):
+    voice_id = serializers.CharField(
+        trim_whitespace=True,
+        max_length=256,
+    )
+
+
+@api_view(["POST"])
+def user_say(request):
+    """Publish an announcer message into the active LiveKit voice room."""
+    started = time.monotonic()
+    input_serializer = AnnouncerSaySerializer(data=request.data)
+    input_serializer.is_valid(raise_exception=True)
+
+    room_name = input_serializer.validated_data.get("room_name") or None
+    agent_name = input_serializer.validated_data["agent_name"]
+    logger.info(
+        "dispatch_timing stage=user_say_request room_name=%s agent_name=%s text_len=%d",
+        room_name or "",
+        agent_name,
+        len(input_serializer.validated_data["text"]),
+    )
+    try:
+        voice_entry = get_voice_history_entry_for_agent_name(agent_name)
+        logger.info(
+            "dispatch_timing stage=user_say_voice_resolved agent_name=%s "
+            "thread_id=%s voice_id=%s voice_name=%s source=%s",
+            agent_name,
+            voice_entry.thread_id,
+            voice_entry.voice_id or "",
+            voice_entry.voice_name or "",
+            voice_entry.source,
+        )
+        result = async_to_sync(publish_announcer_message)(
+            input_serializer.validated_data["text"],
+            room_name=room_name,
+            voice_id=voice_entry.voice_id,
+        )
+    except UnknownAgentVoiceError as exc:
+        catalog_voice = cartesia_voice_for_name(agent_name)
+        logger.warning(
+            "dispatch_timing stage=user_say_voice_unknown agent_name=%s "
+            "catalog_voice_id=%s catalog_voice_name=%s history=%s",
+            agent_name,
+            catalog_voice.id if catalog_voice else "",
+            catalog_voice.name if catalog_voice else "",
+            voice_history_debug_snapshot(agent_name),
+        )
+        return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    except AnnouncerValidationError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except NoActiveLiveKitRoomError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    except AnnouncerError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("Unable to publish LiveKit announcer message")
+        return Response(
+            {"detail": "Unable to publish announcer message."},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    response = Response(
+        {
+            "message_id": result.message_id,
+            "room_name": result.room_name,
+            "status": "published",
+        },
+        status=status.HTTP_202_ACCEPTED,
+    )
+    logger.info(
+        "dispatch_timing stage=user_say_response message_id=%s room_name=%s elapsed_ms=%d",
+        result.message_id,
+        result.room_name,
+        int((time.monotonic() - started) * 1000),
+    )
+    return response
+
+
+@api_view(["POST"])
+def user_play(request):
+    """Publish an audio playback message into the active LiveKit voice room."""
+    started = time.monotonic()
+    input_serializer = AnnouncerPlaySerializer(data=request.data)
+    input_serializer.is_valid(raise_exception=True)
+
+    room_name = input_serializer.validated_data.get("room_name") or None
+    audio_path = input_serializer.validated_data["audio_path"]
+    logger.info(
+        "dispatch_timing stage=user_play_request room_name=%s audio_basename=%s",
+        room_name or "",
+        Path(audio_path).name,
+    )
+    try:
+        result = async_to_sync(publish_announcer_audio_file)(
+            audio_path,
+            room_name=room_name,
+        )
+    except AnnouncerValidationError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except NoActiveLiveKitRoomError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    except AnnouncerError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("Unable to publish LiveKit audio playback message")
+        return Response(
+            {"detail": "Unable to publish audio playback message."},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    response = Response(
+        {
+            "message_id": result.message_id,
+            "room_name": result.room_name,
+            "status": "published",
+        },
+        status=status.HTTP_202_ACCEPTED,
+    )
+    logger.info(
+        "dispatch_timing stage=user_play_response message_id=%s room_name=%s elapsed_ms=%d",
+        result.message_id,
+        result.room_name,
+        int((time.monotonic() - started) * 1000),
+    )
+    return response
+
+
+@api_view(["GET"])
+def cartesia_voice_settings(request):
+    """Return the supported Cartesia voice catalog and dispatcher selection."""
+    return Response(
+        {
+            "voices": cartesia_voice_catalog_payload(),
+            "dispatcher_voice": dispatcher_voice(),
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["PUT"])
+def dispatcher_voice_settings(request):
+    """Persist the dispatcher voice selected from the Cartesia catalog."""
+    input_serializer = DispatcherVoiceSerializer(data=request.data)
+    input_serializer.is_valid(raise_exception=True)
+    try:
+        selected_voice = set_dispatcher_voice(
+            input_serializer.validated_data["voice_id"]
+        )
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response(
+        {
+            "dispatcher_voice": selected_voice,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["GET"])
+def livekit_voice_route(request):
+    """Return the current LiveKit voice route state."""
+    state = get_livekit_voice_route_state()
+    return Response(
+        {
+            "dispatcher_thread_id": state.dispatcher_thread_id,
+            "dispatcher_voice_id": state.dispatcher_voice_id,
+            "dispatcher_voice_name": state.dispatcher_voice_name,
+            "active_target_thread_id": state.active_target_thread_id,
+            "active_target_kind": state.active_target_kind,
+            "active_target_label": state.active_target_label,
+            "active_target_voice_id": state.active_target_voice_id,
+            "active_target_voice_name": state.active_target_voice_name,
+            "active_route": state.active_route,
+            "instruction_override_supported": state.instruction_override_supported,
+            "blocked_reason": live_target_transfer_blocker(),
+            "updated_at": state.updated_at,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["POST"])
+def livekit_voice_route_exit(request):
+    """Route future LiveKit voice turns back to the dispatcher."""
+    input_serializer = VoiceRouteCommandSerializer(data=request.data)
+    input_serializer.is_valid(raise_exception=True)
+
+    room_name = input_serializer.validated_data.get("room_name") or None
+    try:
+        result = async_to_sync(publish_exit_to_dispatch)(room_name=room_name)
+    except AnnouncerValidationError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except NoActiveLiveKitRoomError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    except VoiceRouteError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("Unable to publish LiveKit voice route exit")
+        return Response(
+            {"detail": "Unable to publish LiveKit voice route command."},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    return Response(
+        {
+            "command_id": result.command_id,
+            "room_name": result.room_name,
+            "status": "published",
+            "state": {
+                "dispatcher_thread_id": result.state.dispatcher_thread_id,
+                "dispatcher_voice_id": result.state.dispatcher_voice_id,
+                "dispatcher_voice_name": result.state.dispatcher_voice_name,
+                "active_target_thread_id": result.state.active_target_thread_id,
+                "active_target_voice_id": result.state.active_target_voice_id,
+                "active_target_voice_name": result.state.active_target_voice_name,
+                "active_route": result.state.active_route,
+            },
+        },
+        status=status.HTTP_202_ACCEPTED,
+    )
+
+
+@api_view(["POST"])
+def livekit_voice_route_transfer(request):
+    """Route future LiveKit voice turns to an existing Codex thread if safe."""
+    input_serializer = VoiceRouteTransferSerializer(data=request.data)
+    input_serializer.is_valid(raise_exception=True)
+
+    manager = get_session_manager()
+    resolved = async_to_sync(_resolve_voice_transfer_target)(
+        manager,
+        thread_id=input_serializer.validated_data.get("thread_id") or None,
+        agent_name=input_serializer.validated_data.get("agent_name") or None,
+    )
+    if resolved["status"] != 200:
+        return Response(resolved["data"], status=resolved["status"])
+
+    thread = resolved["thread"]
+    thread_id = thread.session_id
+    label = input_serializer.validated_data.get("label") or _thread_label(thread)
+    requested_agent_name = input_serializer.validated_data.get("agent_name") or None
+    agent_name = (
+        requested_agent_name
+        or getattr(thread, "agent_name", None)
+        or _derived_thread_agent_name(thread)
+        or None
+    )
+
+    transfer_kwargs = {
+        "directory": thread.directory,
+        "label": label,
+        "room_name": input_serializer.validated_data.get("room_name") or None,
+    }
+    if agent_name:
+        transfer_kwargs["agent_name"] = agent_name
+
+    try:
+        result = async_to_sync(publish_transfer_to_thread)(thread_id, **transfer_kwargs)
+    except VoiceRouteBlockedError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+    except AnnouncerValidationError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except NoActiveLiveKitRoomError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    except VoiceRouteError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("Unable to publish LiveKit voice route transfer")
+        return Response(
+            {"detail": "Unable to publish LiveKit voice route command."},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    return Response(
+        {
+            "command_id": result.command_id,
+            "room_name": result.room_name,
+            "status": "published",
+            "state": {
+                "dispatcher_thread_id": result.state.dispatcher_thread_id,
+                "dispatcher_voice_id": result.state.dispatcher_voice_id,
+                "dispatcher_voice_name": result.state.dispatcher_voice_name,
+                "active_target_thread_id": result.state.active_target_thread_id,
+                "active_target_voice_id": result.state.active_target_voice_id,
+                "active_target_voice_name": result.state.active_target_voice_name,
+                "active_route": result.state.active_route,
+            },
+        },
+        status=status.HTTP_202_ACCEPTED,
+    )
+
+
+async def _resolve_voice_transfer_target(
+    manager,
+    *,
+    thread_id: str | None,
+    agent_name: str | None,
+) -> dict:
+    if thread_id:
+        thread = await manager.get_thread_state(thread_id)
+        if thread is None:
+            return {
+                "status": status.HTTP_404_NOT_FOUND,
+                "data": {"detail": f"Thread {thread_id} not found."},
+            }
+        return {"status": status.HTTP_200_OK, "thread": thread}
+
+    assert agent_name is not None
+    requested_name = _normalize_agent_name(agent_name)
+    threads = await manager.list_threads()
+    exact_matches = [
+        thread
+        for thread in threads
+        if _normalize_agent_name(_thread_agent_name(thread)) == requested_name
+    ]
+    matches = exact_matches or [
+        thread
+        for thread in threads
+        if _normalize_agent_name(_derived_thread_agent_name(thread)) == requested_name
+    ]
+    if not matches:
+        return {
+            "status": status.HTTP_404_NOT_FOUND,
+            "data": {"detail": f"Agent {agent_name!r} not found."},
+        }
+    selected = max(matches, key=_thread_recency_key)
+    if len(matches) > 1:
+        logger.info(
+            "dispatch_timing stage=voice_route_agent_multiple agent_name=%s "
+            "selected_thread_id=%s candidates=%s",
+            agent_name,
+            getattr(selected, "session_id", ""),
+            [
+                {
+                    "thread_id": getattr(thread, "session_id", ""),
+                    "name": _thread_agent_name(thread),
+                    "updated_at": str(getattr(thread, "updated_at", "") or ""),
+                }
+                for thread in matches[:10]
+            ],
+        )
+    return {"status": status.HTTP_200_OK, "thread": selected}
+
+
+def _thread_agent_name(thread) -> str | None:
+    value = getattr(thread, "agent_name", None)
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _derived_thread_agent_name(thread) -> str | None:
+    label = _thread_label(thread)
+    if not label:
+        return None
+    voice = super_agent_voice_for_context(label, label)
+    return voice.name if voice else None
+
+
+def _thread_label(thread) -> str | None:
+    for value in (
+        getattr(thread, "name", None),
+        getattr(thread, "title", None),
+        getattr(thread, "preview", None),
+        getattr(thread, "directory", None),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _normalize_agent_name(value: str | None) -> str:
+    return " ".join((value or "").split()).casefold()
+
+
+def _thread_recency_key(thread) -> tuple[float, str]:
+    thread_id = getattr(thread, "session_id", "")
+    return (
+        _timestamp_value(getattr(thread, "updated_at", None)),
+        thread_id if isinstance(thread_id, str) else "",
+    )
+
+
+def _timestamp_value(value) -> float:
+    if isinstance(value, datetime):
+        return value.timestamp()
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+@api_view(["POST"])
+def livekit_room_token(request):
+    """Mint a local LiveKit room token for the authenticated caller."""
+    input_serializer = LiveKitRoomTokenSerializer(data=request.data)
+    input_serializer.is_valid(raise_exception=True)
+
+    api_key = os.environ.get("LIVEKIT_API_KEY")
+    api_secret = os.environ.get("LIVEKIT_API_SECRET")
+    if not api_key or not api_secret:
+        raise serializers.ValidationError(
+            {"detail": "Local LiveKit credentials are not configured."}
+        )
+
+    if not isinstance(request.auth, dict):
+        raise serializers.ValidationError(
+            {
+                "detail": "A JWT-authenticated caller is required to start a LiveKit session."
+            }
+        )
+
+    room_name = input_serializer.validated_data.get("room_name")
+    if not room_name:
+        room_name = f"room-{uuid.uuid4().hex[:12]}"
+
+    livekit_dispatch_agent_name = input_serializer.validated_data[
+        "livekit_dispatch_agent_name"
+    ]
+    identity = _request_identity(request)
+
+    metadata = {
+        "user_identity": identity,
+    }
+
+    display_name = (
+        request.user.get_full_name().strip()
+        if hasattr(request.user, "get_full_name")
+        else ""
+    )
+    if not display_name:
+        display_name = identity
+
+    token = (
+        livekit_api.AccessToken(api_key=api_key, api_secret=api_secret)
+        .with_identity(identity)
+        .with_name(display_name)
+        .with_grants(
+            livekit_api.VideoGrants(
+                room_join=True,
+                room=room_name,
+                can_publish=True,
+                can_subscribe=True,
+                can_publish_data=True,
+            )
+        )
+        .with_room_config(
+            livekit_api.RoomConfiguration(
+                agents=[
+                    livekit_api.RoomAgentDispatch(
+                        agent_name=livekit_dispatch_agent_name,
+                        metadata=json.dumps(metadata),
+                    )
+                ]
+            )
+        )
+        .with_ttl(timedelta(hours=1))
+        .to_jwt()
+    )
+
+    return Response({"token": token, "room_name": room_name})
+
+
+async def _resolve_companion_target_room(room_name: str | None):
+    client = _build_livekit_client()
+    try:
+        return await _resolve_target_room(client, room_name=room_name)
+    finally:
+        await client.aclose()
+
+
+@api_view(["GET", "POST"])
+def livekit_companion_session(request):
+    """Mint a screen-share companion token for the current LiveKit voice room."""
+    input_data = request.query_params if request.method == "GET" else request.data
+    input_serializer = LiveKitCompanionSessionSerializer(data=input_data)
+    input_serializer.is_valid(raise_exception=True)
+
+    api_key = os.environ.get("LIVEKIT_API_KEY")
+    api_secret = os.environ.get("LIVEKIT_API_SECRET")
+    if not api_key or not api_secret:
+        raise serializers.ValidationError(
+            {"detail": "Local LiveKit credentials are not configured."}
+        )
+
+    if not isinstance(request.auth, dict):
+        raise serializers.ValidationError(
+            {"detail": "A JWT-authenticated caller is required to share the screen."}
+        )
+
+    room_name = input_serializer.validated_data.get("room_name") or None
+    try:
+        target = async_to_sync(_resolve_companion_target_room)(room_name)
+    except AnnouncerValidationError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except NoActiveLiveKitRoomError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    except Exception:
+        logger.exception("Unable to resolve LiveKit companion room")
+        return Response(
+            {"detail": "Unable to resolve the active LiveKit room."},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    expires_at = timezone.now() + LIVEKIT_COMPANION_TOKEN_TTL
+    token = (
+        livekit_api.AccessToken(api_key=api_key, api_secret=api_secret)
+        .with_identity(LIVEKIT_COMPANION_IDENTITY)
+        .with_name(LIVEKIT_COMPANION_NAME)
+        .with_grants(
+            livekit_api.VideoGrants(
+                room_join=True,
+                room=target.room_name,
+                can_publish=True,
+                can_subscribe=False,
+                can_publish_data=True,
+            )
+        )
+        .with_ttl(LIVEKIT_COMPANION_TOKEN_TTL)
+        .to_jwt()
+    )
+
+    return Response(
+        {
+            "roomUrl": os.environ.get("LIVEKIT_URL", "ws://localhost:7880"),
+            "roomName": target.room_name,
+            "companionToken": token,
+            "companionTokenExpiresAt": expires_at.isoformat(),
+        }
+    )

@@ -1,0 +1,421 @@
+from __future__ import annotations
+
+import os
+import shutil
+import signal
+import subprocess
+import textwrap
+import time
+from pathlib import Path
+
+import click
+
+from openbase_coder_cli.paths import (
+    DEFAULT_LOG_DIR,
+    LAUNCHD_DOMAIN,
+    LAUNCHD_WRAPPER_DIR,
+    OPENBASE_BASE_DIR,
+    PLIST_DIR,
+)
+from openbase_coder_cli.services.definitions import SERVICES, ServiceDefinition
+from openbase_coder_cli.services.installation import InstallationConfig
+
+
+def _resolve_binary(name: str, homebrew_fallback: str | None = None) -> str:
+    path = shutil.which(name)
+    if path:
+        return path
+    if homebrew_fallback:
+        fallback = Path(homebrew_fallback)
+        if fallback.is_file():
+            return str(fallback)
+    raise click.ClickException(
+        f"Could not find '{name}' on PATH. Please install it first."
+    )
+
+
+def _workspace_binary_candidates(config: InstallationConfig, name: str) -> list[Path]:
+    workspace = Path(config.workspace_path)
+    return [
+        workspace / ".venv" / "bin" / name,
+        workspace / "cli" / ".venv" / "bin" / name,
+        workspace / "agent" / ".venv" / "bin" / name,
+    ]
+
+
+def _nvm_binary_candidates(name: str) -> list[Path]:
+    candidates: list[Path] = []
+
+    nvm_bin = os.environ.get("NVM_BIN")
+    if nvm_bin:
+        candidates.append(Path(nvm_bin) / name)
+
+    nvm_dir = Path(os.environ.get("NVM_DIR") or Path.home() / ".nvm")
+    candidates.extend(sorted(nvm_dir.glob(f"versions/node/*/bin/{name}"), reverse=True))
+
+    return candidates
+
+
+def _resolve_binary_with_preferred_paths(
+    name: str,
+    preferred_paths: list[Path],
+    homebrew_fallback: str | None = None,
+) -> str:
+    for path in preferred_paths:
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+    return _resolve_binary(name, homebrew_fallback)
+
+
+def _resolve_binaries(config: InstallationConfig) -> dict[str, str]:
+    return {
+        "uv": _resolve_binary_with_preferred_paths(
+            "uv",
+            _workspace_binary_candidates(config, "uv"),
+            "/opt/homebrew/bin/uv",
+        ),
+        "codex": _resolve_binary_with_preferred_paths(
+            "codex",
+            _nvm_binary_candidates("codex"),
+        ),
+        "livekit": _resolve_binary(
+            "livekit-server", "/opt/homebrew/bin/livekit-server"
+        ),
+        "openbase_coder": _resolve_binary_with_preferred_paths(
+            "openbase-coder",
+            _workspace_binary_candidates(config, "openbase-coder"),
+        ),
+    }
+
+
+def _uid() -> int:
+    return os.getuid()
+
+
+def _service_label(svc: ServiceDefinition) -> str:
+    return f"{LAUNCHD_DOMAIN}.{svc.name}"
+
+
+def _wrapper_path(svc: ServiceDefinition) -> Path:
+    return LAUNCHD_WRAPPER_DIR / f"{svc.name}.sh"
+
+
+def _plist_path(svc: ServiceDefinition) -> Path:
+    return PLIST_DIR / f"{_service_label(svc)}.plist"
+
+
+def _log_path(svc: ServiceDefinition) -> Path:
+    return DEFAULT_LOG_DIR / f"{svc.name}.log"
+
+
+def _truncate_log_file(path: Path, max_lines: int = 5000) -> None:
+    if not path.exists():
+        return
+
+    lines = path.read_text(errors="replace").splitlines()
+    trimmed = "\n".join(lines[-max_lines:])
+    if trimmed:
+        trimmed += "\n"
+
+    with path.open("r+", encoding="utf-8", errors="replace") as handle:
+        handle.seek(0)
+        handle.write(trimmed)
+        handle.truncate()
+
+
+def _truncate_existing_logs(svc: ServiceDefinition) -> None:
+    _truncate_log_file(_log_path(svc))
+
+
+def _service_command(pid: int) -> str:
+    result = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "command="],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip()
+
+
+def _listening_pids(port: int) -> set[int]:
+    result = subprocess.run(
+        ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    pids: set[int] = set()
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            pids.add(int(line))
+        except ValueError:
+            continue
+    return pids
+
+
+def _signal_pid(pid: int, sig: signal.Signals) -> None:
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        return
+
+
+def _matches_cleanup_signature(svc: ServiceDefinition, pid: int) -> bool:
+    if not svc.cleanup_command_substrings:
+        return True
+
+    command = _service_command(pid)
+    return all(token in command for token in svc.cleanup_command_substrings)
+
+
+def _cleanup_candidate_pids(svc: ServiceDefinition) -> set[int]:
+    candidates: set[int] = set()
+    for port in svc.cleanup_ports:
+        for pid in _listening_pids(port):
+            if _matches_cleanup_signature(svc, pid):
+                candidates.add(pid)
+    return candidates
+
+
+def _cleanup_lingering_processes(svc: ServiceDefinition) -> None:
+    lingering_pids = _cleanup_candidate_pids(svc)
+
+    if not lingering_pids:
+        return
+
+    for pid in lingering_pids:
+        _signal_pid(pid, signal.SIGTERM)
+
+    time.sleep(1)
+
+    stubborn_pids = _cleanup_candidate_pids(svc)
+
+    for pid in stubborn_pids:
+        _signal_pid(pid, signal.SIGKILL)
+
+
+def _ensure_launchd_paths() -> None:
+    DEFAULT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    LAUNCHD_WRAPPER_DIR.mkdir(parents=True, exist_ok=True)
+    PLIST_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _write_service_files(
+    svc: ServiceDefinition,
+    config: InstallationConfig,
+    binaries: dict[str, str],
+) -> None:
+    generate_wrapper(svc, config, binaries)
+    generate_plist(svc, config)
+
+
+def _prepare_service_start(svc: ServiceDefinition) -> None:
+    _truncate_existing_logs(svc)
+    _cleanup_lingering_processes(svc)
+
+
+def generate_wrapper(
+    svc: ServiceDefinition,
+    config: InstallationConfig,
+    binaries: dict[str, str],
+) -> Path:
+    workspace = config.workspace_path
+    env_file = config.env_file
+    data_dir = str(OPENBASE_BASE_DIR)
+
+    template_vars = {"workspace": workspace, "data_dir": data_dir, **binaries}
+    cmd = svc.command_template.format(**template_vars)
+    workdir = svc.workdir_template.format(**template_vars)
+
+    wrapper = _wrapper_path(svc)
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    wrapper.write_text(
+        textwrap.dedent(f"""\
+        #!/bin/bash
+        # Auto-generated wrapper for {svc.name}
+
+        cd "{workdir}"
+
+        if [ -f "{env_file}" ]; then
+            set -a
+            source "{env_file}"
+            set +a
+        fi
+
+        export PATH="$HOME/.local/bin:$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+        {cmd}
+    """)
+    )
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+def generate_plist(svc: ServiceDefinition, config: InstallationConfig) -> Path:
+    label = _service_label(svc)
+    wrapper = _wrapper_path(svc)
+    workdir = svc.workdir_template.format(
+        workspace=config.workspace_path, data_dir=str(OPENBASE_BASE_DIR)
+    )
+    log_dir = DEFAULT_LOG_DIR
+
+    plist = _plist_path(svc)
+    plist.parent.mkdir(parents=True, exist_ok=True)
+    plist.write_text(
+        textwrap.dedent(f"""\
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Label</key>
+            <string>{label}</string>
+            <key>ProgramArguments</key>
+            <array>
+                <string>/bin/bash</string>
+                <string>{wrapper}</string>
+            </array>
+            <key>WorkingDirectory</key>
+            <string>{workdir}</string>
+            <key>RunAtLoad</key>
+            <true/>
+            <key>KeepAlive</key>
+            <true/>
+            <key>ThrottleInterval</key>
+            <integer>5</integer>
+            <key>StandardOutPath</key>
+            <string>{log_dir}/{svc.name}.log</string>
+            <key>StandardErrorPath</key>
+            <string>{log_dir}/{svc.name}.log</string>
+        </dict>
+        </plist>
+    """)
+    )
+    return plist
+
+
+def _launchctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["launchctl", *args],
+        capture_output=True,
+        text=True,
+        check=check,
+    )
+
+
+def launchctl_bootstrap(svc: ServiceDefinition) -> None:
+    label = _service_label(svc)
+    plist = _plist_path(svc)
+    domain = f"gui/{_uid()}"
+    _prepare_service_start(svc)
+    for attempt in range(4):
+        # Bootout on each attempt in case a prior bootstrap partially registered
+        _launchctl("bootout", f"{domain}/{label}", check=False)
+        time.sleep(0.5 * (attempt + 1))
+        result = _launchctl("bootstrap", domain, str(plist), check=False)
+        if result.returncode == 0:
+            return
+    raise click.ClickException(f"Failed to bootstrap {label}: {result.stderr.strip()}")
+
+
+def launchctl_bootout(svc: ServiceDefinition) -> bool:
+    label = _service_label(svc)
+    result = _launchctl("bootout", f"gui/{_uid()}/{label}", check=False)
+    _cleanup_lingering_processes(svc)
+    return result.returncode == 0
+
+
+def launchctl_kickstart(svc: ServiceDefinition) -> bool:
+    label = _service_label(svc)
+    _prepare_service_start(svc)
+    result = _launchctl("kickstart", "-k", f"gui/{_uid()}/{label}", check=False)
+    return result.returncode == 0
+
+
+def launchctl_kill(svc: ServiceDefinition) -> bool:
+    label = _service_label(svc)
+    result = _launchctl("kill", "SIGTERM", f"gui/{_uid()}/{label}", check=False)
+    _cleanup_lingering_processes(svc)
+    return result.returncode == 0
+
+
+def launchctl_status(svc: ServiceDefinition) -> dict:
+    label = _service_label(svc)
+    result = _launchctl("print", f"gui/{_uid()}/{label}", check=False)
+    if result.returncode != 0:
+        return {"installed": False}
+
+    info = result.stdout
+    pid = None
+    last_exit = None
+    for line in info.splitlines():
+        line = line.strip()
+        if line.startswith("pid = "):
+            pid = line.split("=")[1].strip()
+        if "last exit code" in line:
+            last_exit = line.split("=")[-1].strip()
+
+    return {
+        "installed": True,
+        "pid": pid if pid and pid != "0" else None,
+        "last_exit_code": last_exit,
+    }
+
+
+def install_all_services(config: InstallationConfig) -> None:
+    _ensure_launchd_paths()
+    binaries = _resolve_binaries(config)
+
+    for svc in SERVICES:
+        click.echo(f"  Installing {svc.name}...")
+        _write_service_files(svc, config, binaries)
+        launchctl_bootstrap(svc)
+        click.echo(f"    Loaded {_service_label(svc)}")
+
+    click.echo()
+    click.echo("All services installed and started.")
+    click.echo(f"Logs: {DEFAULT_LOG_DIR}/")
+
+
+def install_service(config: InstallationConfig, svc: ServiceDefinition) -> None:
+    _ensure_launchd_paths()
+    binaries = _resolve_binaries(config)
+    _write_service_files(svc, config, binaries)
+    launchctl_bootstrap(svc)
+
+
+def regenerate_service(config: InstallationConfig, svc: ServiceDefinition) -> None:
+    _ensure_launchd_paths()
+    binaries = _resolve_binaries(config)
+    _write_service_files(svc, config, binaries)
+
+
+def uninstall_all_services() -> None:
+    for svc in SERVICES:
+        if launchctl_bootout(svc):
+            click.echo(f"  Unloaded {svc.name}")
+        else:
+            click.echo(f"  {svc.name} was not loaded")
+
+        plist = _plist_path(svc)
+        wrapper = _wrapper_path(svc)
+        plist.unlink(missing_ok=True)
+        wrapper.unlink(missing_ok=True)
+
+    click.echo()
+    click.echo("All services uninstalled.")
+    click.echo(f"Log files remain at: {DEFAULT_LOG_DIR}/")
+
+
+def regenerate_all_services(config: InstallationConfig) -> None:
+    binaries = _resolve_binaries(config)
+    _ensure_launchd_paths()
+
+    for svc in SERVICES:
+        click.echo(f"  Regenerating {svc.name}...")
+        _write_service_files(svc, config, binaries)
+
+    click.echo("Regenerated all wrappers and plists.")
+    click.echo("Run 'openbase-coder services install' to reload them.")

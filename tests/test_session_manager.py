@@ -1,0 +1,951 @@
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import openbase_coder_cli.mcp.session_manager as session_manager_module
+from openbase_coder_cli.mcp.session_manager import (
+    CodexAppServerSessionManager,
+    resolve_super_agent_instructions_path,
+)
+
+
+def _thread(
+    thread_id: str,
+    cwd: str,
+    *,
+    created_at: int = 1_778_160_000,
+    updated_at: int | None = None,
+    status: str | dict[str, Any] = "notLoaded",
+    turns: list[dict[str, Any]] | None = None,
+    name: str | None = None,
+) -> dict[str, Any]:
+    updated_at = updated_at if updated_at is not None else created_at
+    payload: dict[str, Any] = {
+        "id": thread_id,
+        "preview": "preview",
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+        "status": status if isinstance(status, dict) else {"type": status},
+        "cwd": cwd,
+        "turns": turns or [],
+    }
+    if name:
+        payload["name"] = name
+    return payload
+
+
+def test_resolve_super_agent_instructions_path_defaults_to_openbase_codex_home(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    default_path = tmp_path / "codex_home" / "SUPER_AGENT_INSTRUCTIONS.md"
+    monkeypatch.delenv("CODEX_SUPER_AGENT_INSTRUCTIONS_PATH", raising=False)
+
+    assert (
+        resolve_super_agent_instructions_path(default_path=default_path) == default_path
+    )
+
+
+def test_resolve_super_agent_instructions_path_honors_env_override(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    override_path = tmp_path / "override" / "SUPER_AGENT_INSTRUCTIONS.md"
+    monkeypatch.setenv("CODEX_SUPER_AGENT_INSTRUCTIONS_PATH", str(override_path))
+
+    assert resolve_super_agent_instructions_path() == override_path
+
+
+def _turn(
+    turn_id: str,
+    *,
+    message: str,
+    output: str,
+    started_at: int,
+    completed_at: int | None,
+    status: str,
+) -> dict[str, Any]:
+    return {
+        "id": turn_id,
+        "status": status,
+        "startedAt": started_at,
+        "completedAt": completed_at,
+        "durationMs": 1,
+        "error": None,
+        "items": [
+            {
+                "type": "userMessage",
+                "id": "item-user",
+                "content": [{"type": "text", "text": message}],
+            },
+            {
+                "type": "agentMessage",
+                "id": "item-agent",
+                "phase": "final",
+                "text": output,
+            },
+        ],
+    }
+
+
+class FakeSuperAgentsClient:
+    def __init__(self, responses: dict[str, list[Any]]) -> None:
+        self.responses = {key: list(value) for key, value in responses.items()}
+        self.calls: list[tuple[str, Any]] = []
+        self.merged: list[tuple[str, dict[str, Any]]] = []
+
+    async def ensure_connected(self) -> None:
+        self.calls.append(("ensure_connected", {}))
+
+    async def list_threads(
+        self,
+        use_state_db_only: bool = True,
+        search_term: str | None = None,
+        cwd: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "list_threads",
+                {
+                    "use_state_db_only": use_state_db_only,
+                    "search_term": search_term,
+                    "cwd": cwd,
+                    "limit": limit,
+                    "cursor": cursor,
+                },
+            )
+        )
+        return self._pop("list_threads")
+
+    async def read_thread(
+        self,
+        thread_id: str,
+        include_turns: bool = True,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "read_thread",
+                {"thread_id": thread_id, "include_turns": include_turns},
+            )
+        )
+        return self._pop("read_thread")
+
+    async def get_session(self, thread_id: str) -> Any:
+        self.calls.append(("get_session", {"thread_id": thread_id}))
+        if "get_session" not in self.responses:
+            return None
+        return self._pop("get_session")
+
+    async def start_thread(self, input_data: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(("start_thread", input_data))
+        return self._pop("start_thread")
+
+    async def start_turn(self, input_data: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(("start_turn", input_data))
+        return self._pop("start_turn")
+
+    async def cancel_turn(self, thread_id: str, turn_id: str) -> dict[str, Any]:
+        self.calls.append(("cancel_turn", {"thread_id": thread_id, "turn_id": turn_id}))
+        return self._pop("cancel_turn")
+
+    def pending_permission_requests(self) -> list[Any]:
+        self.calls.append(("pending_permission_requests", {}))
+        return self._pop("pending_permission_requests")
+
+    async def answer_request(
+        self,
+        request_id: str | int,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.calls.append(
+            ("answer_request", {"request_id": request_id, "result": result})
+        )
+        return self._pop("answer_request")
+
+    async def save_routine(self, input_data: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(("save_routine", input_data))
+        return self._pop("save_routine")
+
+    async def list_routines(self) -> dict[str, Any]:
+        self.calls.append(("list_routines", {}))
+        return self._pop("list_routines")
+
+    async def read_routine(self, name: str) -> dict[str, Any]:
+        self.calls.append(("read_routine", {"name": name}))
+        return self._pop("read_routine")
+
+    async def delete_routine(self, name: str) -> dict[str, Any]:
+        self.calls.append(("delete_routine", {"name": name}))
+        return self._pop("delete_routine")
+
+    async def run_due_routines(
+        self,
+        name: str | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        self.calls.append(("run_due_routines", {"name": name, "force": force}))
+        return self._pop("run_due_routines")
+
+    async def request(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        timeout_seconds: float = 30,
+    ) -> dict[str, Any]:
+        self.calls.append(("request", {"method": method, "params": params}))
+        return self._pop(f"request:{method}")
+
+    async def merge_session(
+        self,
+        thread_id: str,
+        patch: dict[str, Any],
+        *,
+        clear_fields: list[str] | None = None,
+    ) -> None:
+        self.calls.append(("merge_session", {"thread_id": thread_id, "patch": patch}))
+        self.merged.append((thread_id, patch))
+
+    def _pop(self, key: str) -> Any:
+        queue = self.responses.get(key, [])
+        if not queue:
+            raise AssertionError(f"Unexpected fake client call: {key}")
+        result = queue.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+def _manager(client: FakeSuperAgentsClient) -> CodexAppServerSessionManager:
+    return CodexAppServerSessionManager(client=client)
+
+
+def test_list_threads_reads_threads_from_super_agents(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    client = FakeSuperAgentsClient(
+        {
+            "list_threads": [
+                {"data": [_thread("thr-1", str(project_dir), name="Project thread")]}
+            ]
+        }
+    )
+
+    threads = asyncio.run(_manager(client).list_threads())
+
+    assert len(threads) == 1
+    assert threads[0].session_id == "thr-1"
+    assert threads[0].directory == str(project_dir)
+    assert threads[0].name == "Project thread"
+    assert threads[0].model_dump(mode="json")["status"] == "idle"
+
+
+def test_list_approval_requests_reads_current_super_agents_pending_requests(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv(
+        "SUPER_AGENTS_APPROVAL_REQUESTS_FILE", str(tmp_path / "approvals.json")
+    )
+    request = SimpleNamespace(
+        id="approval-1",
+        method="exec/requestApproval",
+        params={"threadId": "thr-1", "turnId": "turn-1", "command": "make test"},
+        to_json=lambda: {
+            "id": "approval-1",
+            "method": "exec/requestApproval",
+            "params": {
+                "threadId": "thr-1",
+                "turnId": "turn-1",
+                "command": "make test",
+            },
+            "receivedAt": "2026-05-23T00:00:00.000Z",
+        },
+    )
+    client = FakeSuperAgentsClient({"pending_permission_requests": [[request]]})
+
+    requests = asyncio.run(_manager(client).list_approval_requests())
+
+    assert requests == [
+        {
+            "id": "approval-1",
+            "method": "exec/requestApproval",
+            "params": {
+                "threadId": "thr-1",
+                "turnId": "turn-1",
+                "command": "make test",
+            },
+            "received_at": "2026-05-23T00:00:00.000Z",
+            "thread_id": "thr-1",
+            "turn_id": "turn-1",
+        }
+    ]
+    assert client.calls[0] == ("ensure_connected", {})
+
+
+def test_answer_approval_request_sends_accept_decision() -> None:
+    request = SimpleNamespace(
+        id="approval-1",
+        method="exec/requestApproval",
+        params={},
+        to_json=lambda: {
+            "id": "approval-1",
+            "method": "exec/requestApproval",
+            "params": {},
+        },
+    )
+    client = FakeSuperAgentsClient(
+        {
+            "pending_permission_requests": [[request]],
+            "answer_request": [{"answered": True}],
+        }
+    )
+
+    result = asyncio.run(
+        _manager(client).answer_approval_request("approval-1", "accept")
+    )
+
+    assert result == {"answered": True}
+    assert client.calls[-1] == (
+        "answer_request",
+        {"request_id": "approval-1", "result": {"decision": "accept"}},
+    )
+
+
+def test_answer_approval_request_queues_shared_decision_for_external_owner(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    approvals_path = tmp_path / "approvals.json"
+    approvals_path.write_text(
+        '{"requests":{"approval-1":{"id":"approval-1","method":"exec/requestApproval","params":{}}},"decisions":{}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SUPER_AGENTS_APPROVAL_REQUESTS_FILE", str(approvals_path))
+    client = FakeSuperAgentsClient({"pending_permission_requests": [[]]})
+
+    result = asyncio.run(
+        _manager(client).answer_approval_request("approval-1", "decline")
+    )
+
+    assert result["queued"] is True
+    assert result["result"] == {"decision": "decline"}
+    assert '"decision": "decline"' in approvals_path.read_text(encoding="utf-8")
+
+
+def test_routine_methods_delegate_to_super_agents_client() -> None:
+    client = FakeSuperAgentsClient(
+        {
+            "list_routines": [{"routines": []}],
+            "save_routine": [{"routine": {"name": "daily"}}],
+            "read_routine": [{"routine": {"name": "daily"}}],
+            "run_due_routines": [{"count": 1, "results": [{"name": "daily"}]}],
+            "delete_routine": [{"deleted": True}],
+        }
+    )
+    manager = _manager(client)
+
+    assert asyncio.run(manager.list_routines()) == {"routines": []}
+    assert asyncio.run(manager.save_routine({"name": "daily"})) == {
+        "routine": {"name": "daily"}
+    }
+    assert asyncio.run(manager.read_routine("daily")) == {"routine": {"name": "daily"}}
+    assert asyncio.run(manager.run_due_routines(name="daily", force=True)) == {
+        "count": 1,
+        "results": [{"name": "daily"}],
+    }
+    assert asyncio.run(manager.delete_routine("daily")) == {"deleted": True}
+    assert client.calls[-5:] == [
+        ("list_routines", {}),
+        ("save_routine", {"name": "daily"}),
+        ("read_routine", {"name": "daily"}),
+        ("run_due_routines", {"name": "daily", "force": True}),
+        ("delete_routine", {"name": "daily"}),
+    ]
+
+
+def test_list_threads_paginates_super_agents_results(tmp_path: Path) -> None:
+    first_project_dir = tmp_path / "first-project"
+    second_project_dir = tmp_path / "second-project"
+    first_project_dir.mkdir()
+    second_project_dir.mkdir()
+    client = FakeSuperAgentsClient(
+        {
+            "list_threads": [
+                {
+                    "data": [
+                        _thread("thr-1", str(first_project_dir), updated_at=10),
+                    ],
+                    "nextCursor": "cursor-2",
+                }
+            ],
+            "request:thread/list": [
+                {
+                    "data": [
+                        _thread("thr-2", str(second_project_dir), updated_at=20),
+                    ],
+                    "nextCursor": None,
+                }
+            ],
+        }
+    )
+
+    threads = asyncio.run(_manager(client).list_threads())
+
+    assert [thread.session_id for thread in threads] == ["thr-2", "thr-1"]
+    assert client.calls[1] == ("ensure_connected", {})
+    assert client.calls[2] == (
+        "request",
+        {
+            "method": "thread/list",
+            "params": {"useStateDbOnly": True, "limit": 100, "cursor": "cursor-2"},
+        },
+    )
+
+
+def test_list_thread_page_reads_single_super_agents_page(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    client = FakeSuperAgentsClient(
+        {
+            "list_threads": [
+                {
+                    "data": [_thread("thr-1", str(project_dir), name="Project thread")],
+                    "nextCursor": "cursor-2",
+                }
+            ]
+        }
+    )
+
+    page = asyncio.run(_manager(client).list_thread_page(limit=25))
+
+    assert [thread.session_id for thread in page.threads] == ["thr-1"]
+    assert page.next_cursor == "cursor-2"
+    assert client.calls[0] == (
+        "list_threads",
+        {
+            "use_state_db_only": True,
+            "search_term": None,
+            "cwd": None,
+            "limit": 25,
+            "cursor": None,
+        },
+    )
+
+
+def test_list_thread_page_uses_cursor_request(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    client = FakeSuperAgentsClient(
+        {
+            "request:thread/list": [
+                {
+                    "data": [_thread("thr-2", str(project_dir), name="Project thread")],
+                    "nextCursor": None,
+                }
+            ]
+        }
+    )
+
+    page = asyncio.run(_manager(client).list_thread_page(limit=25, cursor="cursor-2"))
+
+    assert [thread.session_id for thread in page.threads] == ["thr-2"]
+    assert page.next_cursor is None
+    assert client.calls[0] == ("ensure_connected", {})
+    assert client.calls[1] == (
+        "request",
+        {
+            "method": "thread/list",
+            "params": {"useStateDbOnly": True, "limit": 25, "cursor": "cursor-2"},
+        },
+    )
+
+
+def test_list_threads_marks_waiting_on_user_input_as_waiting(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    waiting_status = {"type": "active", "activeFlags": ["waitingOnUserInput"]}
+    client = FakeSuperAgentsClient(
+        {
+            "list_threads": [
+                {"data": [_thread("thr-1", str(project_dir), status=waiting_status)]}
+            ]
+        }
+    )
+
+    threads = asyncio.run(_manager(client).list_threads())
+
+    assert threads[0].status == "waiting"
+    assert threads[0].current_run is None
+    assert threads[0].model_dump(mode="json")["status"] == "waiting"
+
+
+def test_read_thread_treats_in_progress_turn_as_current_run(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    client = FakeSuperAgentsClient(
+        {
+            "read_thread": [
+                {
+                    "thread": _thread(
+                        "thr-1",
+                        str(project_dir),
+                        status="active",
+                        turns=[
+                            _turn(
+                                "turn-1",
+                                message="Inspect repo",
+                                output="Working",
+                                started_at=10,
+                                completed_at=None,
+                                status="inProgress",
+                            )
+                        ],
+                    )
+                }
+            ]
+        }
+    )
+
+    thread = asyncio.run(_manager(client).get_thread_state("thr-1"))
+
+    assert thread is not None
+    assert thread.status == "running"
+    assert thread.current_run is not None
+    assert thread.current_run.run_id == "turn-1"
+    assert thread.current_run.status == "running"
+
+
+def test_read_thread_truncates_completed_turn_history(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    monkeypatch.setenv("OPENBASE_CODER_THREAD_HISTORY_LIMIT", "2")
+    client = FakeSuperAgentsClient(
+        {
+            "read_thread": [
+                {
+                    "thread": _thread(
+                        "thr-1",
+                        str(project_dir),
+                        turns=[
+                            _turn(
+                                f"turn-{index}",
+                                message=f"Prompt {index}",
+                                output=f"Output {index}",
+                                started_at=index,
+                                completed_at=index + 1,
+                                status="completed",
+                            )
+                            for index in range(1, 5)
+                        ],
+                    )
+                }
+            ]
+        }
+    )
+
+    thread = asyncio.run(_manager(client).get_thread_state("thr-1"))
+
+    assert thread is not None
+    assert [turn.run_id for turn in thread.run_history] == ["turn-3", "turn-4"]
+
+
+def test_read_thread_falls_back_to_tracked_summaries_when_payload_is_too_large(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    tracked_turn = SimpleNamespace(
+        turn_id="turn-1",
+        status="running",
+        started_at="2026-05-26T20:10:00.000Z",
+        updated_at="2026-05-26T20:11:00.000Z",
+        finished_at=None,
+        prompt_preview="Inspect repo",
+        last_useful_message="Working",
+        reasoning_effort="low",
+    )
+    client = FakeSuperAgentsClient(
+        {
+            "read_thread": [
+                RuntimeError(
+                    "sent 1009 (message too big) frame with 1593929 bytes exceeds limit of 1048576 bytes"
+                ),
+                {"thread": _thread("thr-1", str(project_dir), status="active")},
+            ],
+            "get_session": [
+                SimpleNamespace(turns={"turn-1": tracked_turn}),
+            ],
+        }
+    )
+
+    thread = asyncio.run(_manager(client).get_thread_state("thr-1"))
+
+    assert thread is not None
+    assert thread.current_run is not None
+    assert thread.current_run.run_id == "turn-1"
+    assert thread.current_run.reasoning_effort == "low"
+    assert thread.current_run.message == "Inspect repo"
+    assert thread.current_run.accumulated_output == "Working"
+    assert client.calls[:3] == [
+        ("read_thread", {"thread_id": "thr-1", "include_turns": True}),
+        ("read_thread", {"thread_id": "thr-1", "include_turns": False}),
+        ("get_session", {"thread_id": "thr-1"}),
+    ]
+
+
+def test_read_thread_uses_tracked_super_agents_reasoning_effort(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    client = FakeSuperAgentsClient(
+        {
+            "read_thread": [
+                {
+                    "thread": _thread(
+                        "thr-1",
+                        str(project_dir),
+                        status="active",
+                        turns=[
+                            _turn(
+                                "turn-1",
+                                message="Inspect repo",
+                                output="Working",
+                                started_at=10,
+                                completed_at=None,
+                                status="inProgress",
+                            )
+                        ],
+                    )
+                }
+            ],
+            "get_session": [
+                SimpleNamespace(
+                    turns={
+                        "turn-1": SimpleNamespace(reasoning_effort="low"),
+                    }
+                )
+            ],
+        }
+    )
+
+    thread = asyncio.run(_manager(client).get_thread_state("thr-1"))
+
+    assert thread is not None
+    assert thread.current_run is not None
+    assert thread.current_run.reasoning_effort == "low"
+    assert thread.model_dump(mode="json")["current_turn"]["reasoning_effort"] == "low"
+
+
+def test_read_thread_marks_waiting_turn_as_waiting(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    waiting_status = {"type": "active", "activeFlags": ["waitingOnUserInput"]}
+    client = FakeSuperAgentsClient(
+        {
+            "read_thread": [
+                {
+                    "thread": _thread(
+                        "thr-1",
+                        str(project_dir),
+                        status=waiting_status,
+                        turns=[
+                            _turn(
+                                "turn-1",
+                                message="Need input",
+                                output="Pick an option",
+                                started_at=10,
+                                completed_at=None,
+                                status="inProgress",
+                            )
+                        ],
+                    )
+                }
+            ]
+        }
+    )
+
+    thread = asyncio.run(_manager(client).get_thread_state("thr-1"))
+
+    assert thread is not None
+    assert thread.status == "waiting"
+    assert thread.current_run is not None
+    assert thread.current_run.status == "waiting"
+
+
+def test_create_thread_reuses_existing_thread_for_directory(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    client = FakeSuperAgentsClient(
+        {"list_threads": [{"data": [_thread("thr-existing", str(project_dir))]}]}
+    )
+
+    thread = asyncio.run(_manager(client).create_thread(str(project_dir)))
+
+    assert thread.session_id == "thr-existing"
+    assert client.calls == [
+        (
+            "list_threads",
+            {
+                "use_state_db_only": True,
+                "search_term": None,
+                "cwd": str(project_dir.resolve()),
+                "limit": 1,
+                "cursor": None,
+            },
+        )
+    ]
+
+
+def test_create_thread_starts_new_thread_when_none_exist(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    monkeypatch.setenv(
+        "CODEX_SUPER_AGENT_INSTRUCTIONS_PATH",
+        str(tmp_path / "MISSING_SUPER_AGENT_INSTRUCTIONS.md"),
+    )
+    client = FakeSuperAgentsClient(
+        {
+            "list_threads": [{"data": []}],
+            "start_thread": [{"thread": _thread("thr-new", str(project_dir))}],
+        }
+    )
+
+    thread = asyncio.run(_manager(client).create_thread(str(project_dir)))
+
+    assert thread.session_id == "thr-new"
+    assert client.calls[1] == ("start_thread", {"cwd": str(project_dir.resolve())})
+
+
+def test_create_thread_includes_super_agent_instructions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    instructions_path = tmp_path / "SUPER_AGENT_INSTRUCTIONS.md"
+    instructions_path.write_text("super agent instructions\n", encoding="utf-8")
+    monkeypatch.setenv("CODEX_SUPER_AGENT_INSTRUCTIONS_PATH", str(instructions_path))
+    client = FakeSuperAgentsClient(
+        {
+            "list_threads": [{"data": []}],
+            "start_thread": [{"thread": _thread("thr-new", str(project_dir))}],
+        }
+    )
+
+    thread = asyncio.run(_manager(client).create_thread(str(project_dir)))
+
+    assert thread.session_id == "thr-new"
+    assert client.calls[1] == (
+        "start_thread",
+        {
+            "cwd": str(project_dir.resolve()),
+            "developerInstructions": "super agent instructions",
+        },
+    )
+
+
+def test_start_turn_starts_via_super_agents_and_broadcasts(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_broadcast(session_id: str, event: dict[str, Any]) -> None:
+        events.append((session_id, event))
+
+    monkeypatch.setattr(
+        "openbase_coder_cli.mcp.session_manager._broadcast",
+        fake_broadcast,
+    )
+
+    async def fail_announce(*args: Any, **kwargs: Any) -> bool:
+        raise AssertionError("turn start should not auto-announce Super Agents")
+
+    monkeypatch.setattr(
+        session_manager_module,
+        "announce_super_agent_start",
+        fail_announce,
+        raising=False,
+    )
+    client = FakeSuperAgentsClient(
+        {
+            "read_thread": [
+                {"thread": _thread("thr-1", str(project_dir), status="idle")},
+            ],
+            "start_turn": [{"turn": {"id": "turn-1", "startedAt": 10}}],
+        }
+    )
+
+    turn_id = asyncio.run(_manager(client).start_turn("thr-1", "Inspect repo"))
+
+    assert turn_id == "turn-1"
+    assert client.calls[-1] == (
+        "start_turn",
+        {"threadId": "thr-1", "cwd": str(project_dir), "prompt": "Inspect repo"},
+    )
+    assert events[0][0] == "thr-1"
+    assert events[0][1]["type"] == "turn_started"
+
+
+def test_interrupt_turn_uses_active_turn_id(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    client = FakeSuperAgentsClient(
+        {
+            "read_thread": [
+                {
+                    "thread": _thread(
+                        "thr-1",
+                        str(project_dir),
+                        status="active",
+                        turns=[
+                            _turn(
+                                "turn-1",
+                                message="Inspect",
+                                output="Working",
+                                started_at=10,
+                                completed_at=None,
+                                status="inProgress",
+                            )
+                        ],
+                    )
+                }
+            ],
+            "cancel_turn": [{}],
+        }
+    )
+
+    success = asyncio.run(_manager(client).interrupt_turn("thr-1"))
+
+    assert success is True
+    assert client.calls[-1] == (
+        "cancel_turn",
+        {"thread_id": "thr-1", "turn_id": "turn-1"},
+    )
+
+
+def test_interrupt_turn_returns_false_without_active_turn(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    client = FakeSuperAgentsClient(
+        {
+            "read_thread": [
+                {
+                    "thread": _thread(
+                        "thr-1",
+                        str(project_dir),
+                        status="idle",
+                        turns=[
+                            _turn(
+                                "turn-old",
+                                message="Done",
+                                output="Done",
+                                started_at=5,
+                                completed_at=6,
+                                status="completed",
+                            )
+                        ],
+                    )
+                }
+            ]
+        }
+    )
+
+    success = asyncio.run(_manager(client).interrupt_turn("thr-1"))
+
+    assert success is False
+    assert all(call[0] != "cancel_turn" for call in client.calls)
+
+
+def test_interrupt_turn_ignores_stale_local_turn_mapping(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    client = FakeSuperAgentsClient(
+        {
+            "read_thread": [
+                {"thread": _thread("thr-1", str(project_dir), status="idle")},
+                {
+                    "thread": _thread(
+                        "thr-1",
+                        str(project_dir),
+                        status="idle",
+                        turns=[
+                            _turn(
+                                "turn-1",
+                                message="Done",
+                                output="Done",
+                                started_at=5,
+                                completed_at=6,
+                                status="completed",
+                            )
+                        ],
+                    )
+                },
+            ],
+            "start_turn": [{"turn": {"id": "turn-1", "startedAt": 10}}],
+        }
+    )
+    manager = _manager(client)
+
+    turn_id = asyncio.run(manager.start_turn("thr-1", "Inspect repo"))
+    success = asyncio.run(manager.interrupt_turn("thr-1"))
+
+    assert turn_id == "turn-1"
+    assert success is False
+    assert all(call[0] != "cancel_turn" for call in client.calls)
+
+
+def test_resume_thread_with_developer_instructions_uses_thread_resume(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    client = FakeSuperAgentsClient({"request:thread/resume": [{}]})
+
+    asyncio.run(
+        _manager(client).resume_thread_with_developer_instructions(
+            "thr-1",
+            str(project_dir),
+            "direct LiveKit instructions",
+        )
+    )
+
+    assert client.calls[0] == ("ensure_connected", {})
+    assert client.calls[1][0] == "request"
+    assert client.calls[1][1]["method"] == "thread/resume"
+    assert client.calls[1][1]["params"]["threadId"] == "thr-1"
+    assert client.calls[1][1]["params"]["cwd"] == str(project_dir)
+    assert client.calls[1][1]["params"]["developerInstructions"] == (
+        "direct LiveKit instructions"
+    )
+
+
+def test_resume_thread_without_explicit_instructions_uses_super_agent_instructions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    instructions_path = tmp_path / "SUPER_AGENT_INSTRUCTIONS.md"
+    instructions_path.write_text("super resume instructions\n", encoding="utf-8")
+    monkeypatch.setenv("CODEX_SUPER_AGENT_INSTRUCTIONS_PATH", str(instructions_path))
+    client = FakeSuperAgentsClient({"request:thread/resume": [{}]})
+
+    asyncio.run(_manager(client)._resume_thread("thr-1", str(project_dir)))
+
+    assert client.calls[1][0] == "request"
+    assert client.calls[1][1]["method"] == "thread/resume"
+    assert client.calls[1][1]["params"]["developerInstructions"] == (
+        "super resume instructions"
+    )

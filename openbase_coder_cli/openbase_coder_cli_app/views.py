@@ -1,0 +1,241 @@
+"""Compatibility exports for CLI API views.
+
+Endpoint implementations live in focused modules by domain. Keep these re-exports
+so existing URL imports and tests can continue importing from `.views`.
+"""
+
+from __future__ import annotations
+
+from django.views.decorators.csrf import csrf_exempt
+
+from openbase_coder_cli.dispatcher_config import dispatcher_voice, set_dispatcher_voice
+from openbase_coder_cli.livekit_announcer import (
+    _build_livekit_client,
+    _resolve_target_room,
+    publish_announcer_audio_file,
+    publish_announcer_message,
+)
+from openbase_coder_cli.openbase_coder_cli_app import agents_md as _agents_md
+from openbase_coder_cli.openbase_coder_cli_app import diagnostics as _diagnostics
+from openbase_coder_cli.openbase_coder_cli_app import livekit as _livekit
+from openbase_coder_cli.openbase_coder_cli_app import skills as _skills
+from openbase_coder_cli.openbase_coder_cli_app.approvals import (
+    approval_request_detail,
+    approval_requests,
+)
+from openbase_coder_cli.openbase_coder_cli_app.auth import (
+    auth_logout,
+    auth_refresh_jwt,
+    auth_session,
+)
+from openbase_coder_cli.openbase_coder_cli_app.brain_readiness import brain_readiness
+from openbase_coder_cli.openbase_coder_cli_app.diagnostics import (
+    devices_list,
+    health_check,
+)
+from openbase_coder_cli.openbase_coder_cli_app.livekit import (
+    livekit_room_token,
+    livekit_voice_route,
+    livekit_voice_route_exit,
+    livekit_voice_route_transfer,
+)
+from openbase_coder_cli.openbase_coder_cli_app.plugins_tools import (
+    boilersync_templates,
+    bootstrap_run,
+    plugin_console_registry,
+    plugin_detail,
+    plugins_list,
+    uv_tool_detail,
+    uv_tool_executable_help,
+    uv_tools_list,
+)
+from openbase_coder_cli.openbase_coder_cli_app.projects import (
+    git_diff,
+    project_status,
+    recent_projects,
+)
+from openbase_coder_cli.openbase_coder_cli_app.reports import (
+    global_reports_projects,
+    project_reports,
+    project_reports_download,
+    project_reports_file,
+)
+from openbase_coder_cli.openbase_coder_cli_app.routines import (
+    routine_detail,
+    routines_list,
+    routines_run_due,
+)
+from openbase_coder_cli.openbase_coder_cli_app.services_views import (
+    launchctl_ignored_settings,
+    launchctl_service_action,
+    launchctl_services_list,
+    openbase_restart,
+    openbase_service_action,
+    openbase_services_list,
+    service_status,
+)
+from openbase_coder_cli.openbase_coder_cli_app.skills import _home_skills_dir
+from openbase_coder_cli.openbase_coder_cli_app.threads import (
+    thread_detail,
+    thread_interrupt,
+    thread_list,
+    thread_start_turn,
+)
+from openbase_coder_cli.paths import (
+    CODEX_AGENTS_MD_PATH,
+    CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH,
+    CODEX_DISPATCHER_INSTRUCTIONS_PATH,
+    CODEX_HOME_DIR,
+    CODEX_SUPER_AGENT_INSTRUCTIONS_PATH,
+    DEFAULT_LOG_DIR,
+    NORMAL_CODEX_AGENTS_MD_PATH,
+    NORMAL_CODEX_HOME_DIR,
+)
+
+
+def _sync_agents_md_compat_globals() -> None:
+    _agents_md.CODEX_AGENTS_MD_PATH = CODEX_AGENTS_MD_PATH
+    _agents_md.CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH = (
+        CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH
+    )
+    _agents_md.CODEX_DISPATCHER_INSTRUCTIONS_PATH = CODEX_DISPATCHER_INSTRUCTIONS_PATH
+    _agents_md.CODEX_HOME_DIR = CODEX_HOME_DIR
+    _agents_md.CODEX_SUPER_AGENT_INSTRUCTIONS_PATH = CODEX_SUPER_AGENT_INSTRUCTIONS_PATH
+    _agents_md.NORMAL_CODEX_AGENTS_MD_PATH = NORMAL_CODEX_AGENTS_MD_PATH
+    _agents_md.NORMAL_CODEX_HOME_DIR = NORMAL_CODEX_HOME_DIR
+
+
+def _sync_livekit_compat_globals() -> None:
+    _livekit.dispatcher_voice = dispatcher_voice
+    _livekit.set_dispatcher_voice = set_dispatcher_voice
+    _livekit.publish_announcer_message = publish_announcer_message
+    _livekit.publish_announcer_audio_file = publish_announcer_audio_file
+    _livekit._build_livekit_client = _build_livekit_client
+    _livekit._resolve_target_room = _resolve_target_room
+
+
+def _sync_skills_compat_globals() -> None:
+    _skills.CODEX_HOME_DIR = CODEX_HOME_DIR
+    _skills._home_skills_dir = _home_skills_dir
+
+
+@csrf_exempt
+def agents_md(request):
+    _sync_agents_md_compat_globals()
+    return _agents_md.agents_md(request)
+
+
+@csrf_exempt
+def ios_logs_upload(request):
+    _diagnostics.DEFAULT_LOG_DIR = DEFAULT_LOG_DIR
+    return _diagnostics.ios_logs_upload(request)
+
+
+@csrf_exempt
+def user_say(request):
+    _sync_livekit_compat_globals()
+    return _livekit.user_say(request)
+
+
+@csrf_exempt
+def user_play(request):
+    _sync_livekit_compat_globals()
+    return _livekit.user_play(request)
+
+
+@csrf_exempt
+def cartesia_voice_settings(request):
+    _sync_livekit_compat_globals()
+    return _livekit.cartesia_voice_settings(request)
+
+
+@csrf_exempt
+def dispatcher_voice_settings(request):
+    _sync_livekit_compat_globals()
+    return _livekit.dispatcher_voice_settings(request)
+
+
+@csrf_exempt
+def livekit_companion_session(request):
+    _sync_livekit_compat_globals()
+    return _livekit.livekit_companion_session(request)
+
+
+@csrf_exempt
+def skills_list(request):
+    _sync_skills_compat_globals()
+    return _skills.skills_list(request)
+
+
+@csrf_exempt
+def skills_symlink(request):
+    _sync_skills_compat_globals()
+    return _skills.skills_symlink(request)
+
+
+@csrf_exempt
+def skill_detail(request, skill_name):
+    _sync_skills_compat_globals()
+    return _skills.skill_detail(request, skill_name)
+
+
+__all__ = [
+    "agents_md",
+    "approval_request_detail",
+    "approval_requests",
+    "auth_logout",
+    "auth_refresh_jwt",
+    "auth_session",
+    "boilersync_templates",
+    "bootstrap_run",
+    "brain_readiness",
+    "cartesia_voice_settings",
+    "devices_list",
+    "dispatcher_voice_settings",
+    "dispatcher_voice",
+    "git_diff",
+    "global_reports_projects",
+    "health_check",
+    "_home_skills_dir",
+    "ios_logs_upload",
+    "launchctl_ignored_settings",
+    "launchctl_service_action",
+    "launchctl_services_list",
+    "livekit_companion_session",
+    "livekit_room_token",
+    "livekit_voice_route",
+    "livekit_voice_route_exit",
+    "livekit_voice_route_transfer",
+    "openbase_restart",
+    "openbase_service_action",
+    "openbase_services_list",
+    "plugin_console_registry",
+    "plugin_detail",
+    "plugins_list",
+    "project_reports",
+    "project_reports_download",
+    "project_reports_file",
+    "project_status",
+    "recent_projects",
+    "routine_detail",
+    "routines_list",
+    "routines_run_due",
+    "service_status",
+    "set_dispatcher_voice",
+    "skill_detail",
+    "skills_list",
+    "skills_symlink",
+    "thread_detail",
+    "thread_interrupt",
+    "thread_list",
+    "thread_start_turn",
+    "_build_livekit_client",
+    "_resolve_target_room",
+    "publish_announcer_audio_file",
+    "publish_announcer_message",
+    "user_play",
+    "user_say",
+    "uv_tool_detail",
+    "uv_tool_executable_help",
+    "uv_tools_list",
+]

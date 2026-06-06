@@ -1,0 +1,284 @@
+"""Thread control API views."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from asgiref.sync import async_to_sync
+from rest_framework import status
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+
+from openbase_coder_cli.mcp.projects import (
+    refresh_projects_from_thread_directories as _refresh_projects_from_threads,
+)
+from openbase_coder_cli.mcp.session_manager import ThreadListPage, get_session_manager
+from openbase_coder_cli.openbase_coder_cli_app.common import _auth_debug_value
+from openbase_coder_cli.openbase_coder_cli_app.thread_cache import (
+    get_cached_thread_page,
+    invalidate_thread_list_cache,
+)
+from openbase_coder_cli.openbase_coder_cli_app.thread_metadata import (
+    annotate_thread_payload,
+    get_livekit_shared_thread_id,
+)
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_THREAD_PAGE_SIZE = 25
+MAX_THREAD_PAGE_SIZE = 100
+
+
+def _parse_positive_int(
+    value: Any, *, name: str, default: int
+) -> tuple[int | None, str | None]:
+    if value is None or value == "":
+        return default, None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None, f"{name} must be a positive integer"
+    if parsed < 1:
+        return None, f"{name} must be a positive integer"
+    return parsed, None
+
+
+def _thread_page_url(request, *, page: int, page_size: int) -> str:
+    query = request.query_params.copy()
+    query["page"] = str(page)
+    query["page_size"] = str(page_size)
+    query.pop("cursor", None)
+    return f"{request.path}?{query.urlencode()}"
+
+
+def _thread_cursor_url(
+    request, *, page: int, page_size: int, cursor: str | None
+) -> str:
+    query = request.query_params.copy()
+    query["page"] = str(page)
+    query["page_size"] = str(page_size)
+    if cursor:
+        query["cursor"] = cursor
+    else:
+        query.pop("cursor", None)
+    return f"{request.path}?{query.urlencode()}"
+
+
+def _get_thread_page_result(
+    manager,
+    *,
+    page: int,
+    page_size: int,
+    cursor: str | None,
+) -> ThreadListPage:
+    if cursor or page == 1:
+        return get_cached_thread_page(manager, limit=page_size, cursor=cursor)
+
+    next_cursor: str | None = None
+    for _ in range(1, page):
+        previous_page = get_cached_thread_page(
+            manager,
+            limit=page_size,
+            cursor=next_cursor,
+        )
+        next_cursor = previous_page.next_cursor
+        if next_cursor is None:
+            return ThreadListPage(threads=[], next_cursor=None)
+    return get_cached_thread_page(manager, limit=page_size, cursor=next_cursor)
+
+
+@api_view(["GET", "POST"])
+def thread_list(request):
+    """List all active threads or create a new one."""
+    logger.info(
+        "thread_list start method=%s path=%s auth=%s",
+        request.method,
+        request.path,
+        _auth_debug_value(request),
+    )
+    manager = get_session_manager()
+
+    if request.method == "POST":
+        directory = request.data.get("directory")
+        if not directory:
+            return Response(
+                {"error": "directory is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        thread = async_to_sync(manager.create_thread)(directory)
+        invalidate_thread_list_cache()
+        logger.info(
+            "thread_list created thread_id=%s directory=%s",
+            thread.session_id,
+            thread.directory,
+        )
+        return Response(
+            {
+                "thread_id": thread.session_id,
+                "directory": thread.directory,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    page, page_error = _parse_positive_int(
+        request.query_params.get("page"),
+        name="page",
+        default=1,
+    )
+    page_size, page_size_error = _parse_positive_int(
+        request.query_params.get("page_size"),
+        name="page_size",
+        default=DEFAULT_THREAD_PAGE_SIZE,
+    )
+    if page_error or page_size_error:
+        return Response(
+            {"error": page_error or page_size_error},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    assert page is not None
+    assert page_size is not None
+    page_size = min(page_size, MAX_THREAD_PAGE_SIZE)
+    cursor = request.query_params.get("cursor") or None
+
+    page_result = _get_thread_page_result(
+        manager,
+        page=page,
+        page_size=page_size,
+        cursor=cursor,
+    )
+    threads = page_result.threads
+    _refresh_projects_from_threads([thread.directory for thread in threads])
+    livekit_thread_id = get_livekit_shared_thread_id()
+    if livekit_thread_id and all(
+        thread.session_id != livekit_thread_id for thread in threads
+    ):
+        try:
+            livekit_thread = async_to_sync(manager.get_thread_state)(livekit_thread_id)
+        except RuntimeError:
+            logger.warning(
+                "thread_list skipping unavailable LiveKit dispatcher fallback thread_id=%s",
+                livekit_thread_id,
+            )
+            livekit_thread = None
+        if livekit_thread is not None:
+            logger.info(
+                "thread_list adding LiveKit dispatcher fallback thread_id=%s",
+                livekit_thread_id,
+            )
+            threads.append(livekit_thread)
+            threads.sort(
+                key=lambda thread: (
+                    thread.current_run.started_at
+                    if thread.current_run is not None
+                    else thread.updated_at
+                ),
+                reverse=True,
+            )
+    count = (page - 1) * page_size + len(threads)
+    if page_result.next_cursor:
+        count += 1
+    page_threads = threads
+    next_url = (
+        _thread_cursor_url(
+            request,
+            page=page + 1,
+            page_size=page_size,
+            cursor=page_result.next_cursor,
+        )
+        if page_result.next_cursor
+        else None
+    )
+    previous_url = (
+        _thread_page_url(request, page=page - 1, page_size=page_size)
+        if page > 1
+        else None
+    )
+
+    logger.info(
+        "thread_list returning count=%s page=%s page_size=%s returned=%s",
+        count,
+        page,
+        page_size,
+        len(page_threads),
+    )
+    return Response(
+        {
+            "count": count,
+            "page": page,
+            "page_size": page_size,
+            "next": next_url,
+            "previous": previous_url,
+            "threads": [
+                annotate_thread_payload(t.model_dump(mode="json")) for t in page_threads
+            ],
+        }
+    )
+
+
+@api_view(["GET", "DELETE"])
+def thread_detail(request, thread_id):
+    """Get or archive a thread."""
+    manager = get_session_manager()
+
+    if request.method == "DELETE":
+        success = async_to_sync(manager.archive_thread)(thread_id)
+        if not success:
+            return Response(
+                {"error": f"Thread {thread_id} not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        invalidate_thread_list_cache()
+        return Response({"success": True})
+
+    thread = async_to_sync(manager.get_thread_state)(thread_id)
+    if thread is None:
+        return Response(
+            {"error": f"Thread {thread_id} not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    return Response(
+        annotate_thread_payload(thread.model_dump(mode="json"), thread_id=thread_id)
+    )
+
+
+@api_view(["POST"])
+def thread_interrupt(request, thread_id):
+    """Interrupt the current turn in a thread.
+
+    NOTE: The iOS app and React console prefer the WebSocket consumer for
+    real-time thread interaction.
+    """
+    manager = get_session_manager()
+    success = async_to_sync(manager.interrupt_turn)(thread_id)
+    if not success:
+        return Response(
+            {"error": f"Thread {thread_id} not found or no active turn"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    invalidate_thread_list_cache()
+    return Response({"success": True})
+
+
+@api_view(["POST"])
+def thread_start_turn(request, thread_id):
+    """Start a new turn on a thread (non-blocking).
+
+    NOTE: The iOS app and React console prefer the WebSocket consumer for
+    real-time thread interaction.
+    """
+    manager = get_session_manager()
+    prompt = request.data.get("prompt")
+    if not prompt:
+        return Response(
+            {"error": "prompt is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        turn_id = async_to_sync(manager.start_turn)(thread_id, prompt)
+    except ValueError as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    invalidate_thread_list_cache()
+    return Response(
+        {"turn_id": turn_id, "status": "started"}, status=status.HTTP_201_CREATED
+    )

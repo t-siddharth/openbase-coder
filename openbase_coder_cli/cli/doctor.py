@@ -1,0 +1,171 @@
+"""
+Doctor command — verify service health and security configuration.
+"""
+
+from __future__ import annotations
+
+import subprocess
+
+import click
+
+from openbase_coder_cli.paths import DEFAULT_ENV_FILE_PATH
+from openbase_coder_cli.services.definitions import SERVICES
+from openbase_coder_cli.services.installation import InstallationConfig
+from openbase_coder_cli.services.launchd import launchctl_status
+
+# Services that have authentication and may safely bind to 0.0.0.0
+_AUTHENTICATED_PORTS: dict[int, str] = {
+    7999: "django-cli (JWT auth)",
+    7880: "livekit-server (API key auth)",
+}
+
+# Required env vars and known-insecure default values
+_REQUIRED_ENV: list[tuple[str, list[str]]] = [
+    ("OPENBASE_CODER_CLI_SECRET_KEY", []),
+    ("LIVEKIT_API_KEY", ["devkey"]),
+    ("LIVEKIT_API_SECRET", ["secret"]),
+]
+
+
+def _parse_env_file() -> dict[str, str]:
+    """Read the .env file and return key-value pairs."""
+    env: dict[str, str] = {}
+    if not DEFAULT_ENV_FILE_PATH.is_file():
+        return env
+    for line in DEFAULT_ENV_FILE_PATH.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        env[key.strip()] = value.strip().strip("\"'")
+    return env
+
+
+def _get_listening_sockets() -> list[tuple[str, int]]:
+    """Return (bind_address, port) for all TCP LISTEN sockets.
+
+    Uses lsof to query the system.
+    """
+    result = subprocess.run(
+        ["lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n"],
+        capture_output=True,
+        text=True,
+    )
+    seen: set[tuple[str, int]] = set()
+    sockets: list[tuple[str, int]] = []
+    for line in result.stdout.splitlines()[1:]:  # skip header
+        parts = line.split()
+        if len(parts) < 9:
+            continue
+        # NAME column is like "*:7880" or "127.0.0.1:2024"
+        name = parts[8]
+        if ":" not in name:
+            continue
+        host, _, port_str = name.rpartition(":")
+        try:
+            port = int(port_str)
+        except ValueError:
+            continue
+        key = (host, port)
+        if key not in seen:
+            seen.add(key)
+            sockets.append(key)
+    return sockets
+
+
+@click.command()
+def doctor() -> None:
+    """Check service health and security configuration."""
+    ok_count = 0
+    warn_count = 0
+    fail_count = 0
+
+    def ok(msg: str) -> None:
+        nonlocal ok_count
+        ok_count += 1
+        click.echo(click.style("  OK  ", fg="green") + msg)
+
+    def warn(msg: str) -> None:
+        nonlocal warn_count
+        warn_count += 1
+        click.echo(click.style("  WARN ", fg="yellow") + msg)
+
+    def fail(msg: str) -> None:
+        nonlocal fail_count
+        fail_count += 1
+        click.echo(click.style("  FAIL ", fg="red") + msg)
+
+    # --- Installation ---
+    click.echo()
+    click.echo(click.style("Installation", bold=True))
+    if InstallationConfig.exists():
+        ok("installation.json found")
+    else:
+        fail("installation.json missing — run 'openbase-coder setup'")
+
+    # --- Service health ---
+    click.echo()
+    click.echo(click.style("Service Health", bold=True))
+    for svc in SERVICES:
+        info = launchctl_status(svc)
+        if not info["installed"]:
+            fail(f"{svc.name}: not installed")
+        elif info["pid"]:
+            ok(f"{svc.name}: running (pid {info['pid']})")
+        else:
+            exit_code = info.get("last_exit_code", "unknown")
+            fail(f"{svc.name}: not running (last exit: {exit_code})")
+
+    # --- Bind address security ---
+    click.echo()
+    click.echo(click.style("Network Security", bold=True))
+    sockets = _get_listening_sockets()
+
+    for port, label in _AUTHENTICATED_PORTS.items():
+        listeners = [(h, p) for h, p in sockets if p == port]
+        if not listeners:
+            warn(f"port {port} ({label}): not listening")
+        else:
+            for host, _ in listeners:
+                if host in ("*", "0.0.0.0", "[::]"):
+                    ok(f"port {port} ({label}): bound to {host} (auth enabled)")
+                else:
+                    ok(f"port {port} ({label}): bound to {host}")
+
+    # --- Credentials ---
+    click.echo()
+    click.echo(click.style("Credentials", bold=True))
+    env = _parse_env_file()
+
+    if not DEFAULT_ENV_FILE_PATH.is_file():
+        fail(f".env file not found at {DEFAULT_ENV_FILE_PATH}")
+    else:
+        ok(f".env file exists at {DEFAULT_ENV_FILE_PATH}")
+
+    for var_name, insecure_values in _REQUIRED_ENV:
+        value = env.get(var_name, "")
+        if not value:
+            fail(f"{var_name}: not set")
+        elif value in insecure_values:
+            fail(f"{var_name}: using insecure default value '{value}'")
+        else:
+            ok(f"{var_name}: set")
+
+    # --- Summary ---
+    click.echo()
+    total = ok_count + warn_count + fail_count
+    summary = f"{ok_count}/{total} checks passed"
+    if fail_count:
+        summary += f", {fail_count} failed"
+    if warn_count:
+        summary += f", {warn_count} warnings"
+
+    if fail_count:
+        click.echo(click.style(summary, fg="red", bold=True))
+    elif warn_count:
+        click.echo(click.style(summary, fg="yellow", bold=True))
+    else:
+        click.echo(click.style(summary, fg="green", bold=True))
+    click.echo()

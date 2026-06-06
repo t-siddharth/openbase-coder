@@ -1,0 +1,47 @@
+[project]
+site_name = "Openbase CLI Documentation"
+site_description = "Set up and operate the Openbase local CLI runtime"
+site_url = "https://montaguegabe.github.io/openbase-coder-cli"
+site_author = "Openbase"
+repo_url = "https://github.com/montaguegabe/openbase-coder-cli"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Getting Started" = "getting-started.md" },
+  { "Commands" = [
+    "commands/index.md",
+    { "setup" = "commands/setup.md" },
+    { "server" = "commands/server.md" },
+    { "restart" = "commands/restart.md" },
+    { "services" = "commands/services.md" },
+    { "services install" = "commands/services-install.md" },
+    { "services start" = "commands/services-start.md" },
+    { "services stop" = "commands/services-stop.md" },
+    { "services status" = "commands/services-status.md" },
+    { "services logs" = "commands/services-logs.md" },
+    { "services regenerate" = "commands/services-regenerate.md" },
+    { "services uninstall" = "commands/services-uninstall.md" },
+    { "doctor" = "commands/doctor.md" },
+    { "login" = "commands/login.md" },
+    { "logout" = "commands/logout.md" },
+    { "plugins" = "commands/plugins.md" },
+    { "bootstrap" = "commands/bootstrap.md" }
+  ]},
+  { "Plugins" = [
+    "plugins/index.md",
+    { "Brain Score Concurrency" = "plugins/brain-score-concurrency.md" }
+  ]},
+  { "Configuration" = "configuration.md" },
+  { "Files and Paths" = "files-and-paths.md" },
+  { "iOS App Tabs" = "ios-tabs.md" }
+]
+
+[project.theme]
+variant = "modern"
+features = [
+  "navigation.instant",
+  "navigation.expand",
+  "navigation.path",
+  "navigation.indexes",
+  "content.code.copy"
+]

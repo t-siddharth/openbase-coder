@@ -1,0 +1,178 @@
+"""
+Server command for openbase_coder_cli.
+
+This module provides the CLI command to start the Django server.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import click
+
+from openbase_coder_cli.cli.node import run_workspace_package_command
+from openbase_coder_cli.cli.utils import (
+    get_data_dir,
+    run_collectstatic,
+    run_migrations,
+    setup_django_environment,
+)
+from openbase_coder_cli.plugins.console import sync_console_integration
+from openbase_coder_cli.plugins.store import load_registry
+from openbase_coder_cli.services.installation import InstallationConfig
+
+
+@click.command()
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    help="Host to bind to.",
+    show_default=True,
+)
+@click.option(
+    "--port",
+    default=7999,
+    type=int,
+    help="Port to bind to.",
+    show_default=True,
+)
+@click.option(
+    "--workers",
+    default=1,
+    type=int,
+    help="Number of worker processes.",
+    show_default=True,
+)
+@click.option(
+    "--reload",
+    "reload_",
+    is_flag=True,
+    help="Enable auto-reload for development.",
+)
+@click.option(
+    "--skip-migrations",
+    is_flag=True,
+    help="Skip running migrations on startup.",
+)
+@click.option(
+    "--skip-collectstatic",
+    is_flag=True,
+    help="Skip running collectstatic on startup.",
+)
+def server(
+    host: str,
+    port: int,
+    workers: int,
+    reload_: bool,
+    skip_migrations: bool,
+    skip_collectstatic: bool,
+) -> None:
+    """Start the Openbase Coder Cli server."""
+    # Set up the Django environment
+    setup_django_environment()
+    data_dir = get_data_dir()
+
+    click.echo(f"Data directory: {data_dir}")
+    click.echo()
+
+    # Run migrations
+    if not skip_migrations:
+        click.echo("Running migrations...")
+        run_migrations()
+        click.echo()
+
+    # Run collectstatic
+    if not skip_collectstatic:
+        click.echo("Collecting static files...")
+        run_collectstatic()
+        click.echo()
+
+    # Build console
+    _build_console()
+
+    # Start the server
+    click.echo(f"Starting server at http://{host}:{port}")
+    click.echo("Press Ctrl+C to stop.")
+    click.echo()
+
+    if workers == 1:
+        # Gunicorn always uses a prefork model, even with a single worker. That
+        # trips macOS fork-safety crashes in local launchctl mode when Python
+        # has already touched Objective-C/CoreFoundation state. Run uvicorn
+        # directly for the default local case to avoid forking altogether.
+        cmd = [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "openbase_coder_cli.config.asgi:application",
+            "--host",
+            host,
+            "--port",
+            str(port),
+            "--timeout-keep-alive",
+            "0",
+            "--log-level",
+            "info",
+        ]
+
+        if reload_:
+            cmd.append("--reload")
+    else:
+        # Build the gunicorn command for multi-worker deployments.
+        cmd = [
+            sys.executable,
+            "-m",
+            "gunicorn",
+            "openbase_coder_cli.config.asgi:application",
+            "--bind",
+            f"{host}:{port}",
+            "--workers",
+            str(workers),
+            "--worker-class",
+            "uvicorn.workers.UvicornWorker",
+            "--access-logfile",
+            "/dev/null",
+            "--error-logfile",
+            "-",
+            "--timeout",
+            "0",  # Disable timeout for long-lived MCP streaming connections
+        ]
+
+        if reload_:
+            cmd.extend(["--reload"])
+
+    # Run the server
+    try:
+        subprocess.run(cmd, env=os.environ, check=True)
+    except KeyboardInterrupt:
+        click.echo("\nServer stopped.")
+    except subprocess.CalledProcessError as e:
+        click.echo(f"Server exited with error: {e.returncode}", err=True)
+        sys.exit(e.returncode)
+
+
+def _build_console() -> None:
+    if not InstallationConfig.exists():
+        click.echo("No installation config found, skipping console build.")
+        return
+
+    config = InstallationConfig.load()
+    console_dir = Path(config.workspace_path) / "console"
+    if not console_dir.is_dir():
+        click.echo(f"Console directory not found at {console_dir}, skipping build.")
+        return
+
+    click.echo("Building console...")
+    workspace_dir = Path(config.workspace_path)
+    if not run_workspace_package_command(workspace_dir, console_dir, "install"):
+        return
+
+    # Plugin console dependencies and generated route/component registry
+    sync_console_integration(load_registry(), config.workspace_path)
+
+    run_workspace_package_command(workspace_dir, console_dir, "run", "build")
+    click.echo("Console build complete.")
+    click.echo()

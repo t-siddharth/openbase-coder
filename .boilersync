@@ -1,0 +1,15 @@
+{
+  "template": "cli-with-db",
+  "name_snake": "openbase_coder_cli",
+  "name_pretty": "Openbase Coder Cli",
+  "variables": {
+    "cli_command": "openbase-coder",
+    "description": "OpenBase Coder CLI with embedded server",
+    "author_name": "Gabe Montague",
+    "author_email": "gabe@openbase.com",
+    "author_github_name": "gabemontague",
+    "python_version": 3.12,
+    "homebrew_tap_location": "gabemontague/homebrew-tap",
+    "publish": false
+  }
+}
