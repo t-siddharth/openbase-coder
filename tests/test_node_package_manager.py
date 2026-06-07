@@ -10,6 +10,7 @@ def test_run_workspace_package_command_prefers_pnpm_workspace(monkeypatch, tmp_p
     package_dir = workspace_dir / "console"
     package_dir.mkdir(parents=True)
     (workspace_dir / "pnpm-workspace.yaml").write_text("packages:\n  - console\n")
+    (workspace_dir / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n")
     (package_dir / "package.json").write_text("{}")
     calls = []
 
@@ -26,7 +27,7 @@ def test_run_workspace_package_command_prefers_pnpm_workspace(monkeypatch, tmp_p
 
     assert node.run_workspace_package_command(workspace_dir, package_dir, "install") is True
 
-    assert calls[0][0][0] == ["/bin/pnpm", "install"]
+    assert calls[0][0][0] == ["/bin/pnpm", "install", "--frozen-lockfile"]
     assert calls[0][1]["cwd"] == str(package_dir)
     assert calls[0][1]["check"] is True
 
@@ -70,6 +71,7 @@ def test_run_workspace_package_command_finds_pnpm_home_when_not_on_path(
     pnpm_bin.write_text("#!/bin/sh\n")
     pnpm_bin.chmod(0o755)
     (workspace_dir / "pnpm-workspace.yaml").write_text("packages:\n  - console\n")
+    (workspace_dir / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n")
     (package_dir / "package.json").write_text("{}")
     calls = []
 
@@ -83,4 +85,31 @@ def test_run_workspace_package_command_finds_pnpm_home_when_not_on_path(
 
     assert node.run_workspace_package_command(workspace_dir, package_dir, "install") is True
 
-    assert calls[0][0][0] == [str(pnpm_bin), "install"]
+    assert calls[0][0][0] == [str(pnpm_bin), "install", "--frozen-lockfile"]
+
+
+def test_run_workspace_package_command_allows_pnpm_install_without_lockfile(
+    monkeypatch,
+    tmp_path: Path,
+):
+    workspace_dir = tmp_path / "workspace"
+    package_dir = workspace_dir / "console"
+    package_dir.mkdir(parents=True)
+    (workspace_dir / "pnpm-workspace.yaml").write_text("packages:\n  - console\n")
+    (package_dir / "package.json").write_text("{}")
+    calls = []
+
+    monkeypatch.setattr(
+        node.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in {"npm", "pnpm"} else None,
+    )
+    monkeypatch.setattr(
+        node.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    assert node.run_workspace_package_command(workspace_dir, package_dir, "install") is True
+
+    assert calls[0][0][0] == ["/bin/pnpm", "install"]

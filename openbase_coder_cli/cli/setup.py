@@ -141,7 +141,7 @@ def _clone_workspace(workspace_dir: str) -> None:
     ws = Path(workspace_dir)
     if ws.exists() and (ws / ".git").is_dir():
         click.echo(f"Workspace already exists at {ws}, pulling latest...")
-        subprocess.run(["git", "-C", str(ws), "pull", "--ff-only"], check=True)
+        _update_existing_workspace(ws)
         _multi_sync(ws)
         return
 
@@ -151,6 +151,29 @@ def _clone_workspace(workspace_dir: str) -> None:
         check=True,
     )
     _multi_sync(ws)
+
+
+def _update_existing_workspace(ws: Path) -> None:
+    if ws.resolve() == DEFAULT_WORKSPACE_DIR.resolve():
+        dirty = subprocess.run(
+            ["git", "-C", str(ws), "status", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if dirty:
+            click.echo(
+                "Resetting managed install workspace before update; "
+                "local generated changes are discarded."
+            )
+            subprocess.run(["git", "-C", str(ws), "fetch", "origin", "main"], check=True)
+            subprocess.run(
+                ["git", "-C", str(ws), "reset", "--hard", "origin/main"],
+                check=True,
+            )
+            return
+
+    subprocess.run(["git", "-C", str(ws), "pull", "--ff-only"], check=True)
 
 
 def _multi_sync(ws_path: Path) -> None:

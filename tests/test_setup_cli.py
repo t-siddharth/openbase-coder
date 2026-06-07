@@ -1,8 +1,56 @@
 from __future__ import annotations
 
 import importlib
+import subprocess
 
 setup_cli = importlib.import_module("openbase_coder_cli.cli.setup")
+
+
+def test_update_existing_default_workspace_resets_dirty_checkout(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    commands = []
+
+    monkeypatch.setattr(setup_cli, "DEFAULT_WORKSPACE_DIR", workspace)
+
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+        if command[3:] == ["status", "--porcelain"]:
+            return subprocess.CompletedProcess(command, 0, stdout=" M pnpm-lock.yaml\n")
+        return subprocess.CompletedProcess(command, 0, stdout="")
+
+    monkeypatch.setattr(setup_cli.subprocess, "run", fake_run)
+
+    setup_cli._update_existing_workspace(workspace)
+
+    assert [command for command, _kwargs in commands] == [
+        ["git", "-C", str(workspace), "status", "--porcelain"],
+        ["git", "-C", str(workspace), "fetch", "origin", "main"],
+        ["git", "-C", str(workspace), "reset", "--hard", "origin/main"],
+    ]
+
+
+def test_update_existing_custom_workspace_uses_pull(tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "custom-workspace"
+    default_workspace = tmp_path / "default-workspace"
+    workspace.mkdir()
+    commands = []
+
+    monkeypatch.setattr(setup_cli, "DEFAULT_WORKSPACE_DIR", default_workspace)
+
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="")
+
+    monkeypatch.setattr(setup_cli.subprocess, "run", fake_run)
+
+    setup_cli._update_existing_workspace(workspace)
+
+    assert [command for command, _kwargs in commands] == [
+        ["git", "-C", str(workspace), "pull", "--ff-only"],
+    ]
 
 
 def test_ensure_codex_home_default_files_creates_missing_files(

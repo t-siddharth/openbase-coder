@@ -16,8 +16,13 @@ def run_workspace_package_command(workspace_dir: Path, package_dir: Path, *args:
         return False
 
     executable, command_prefix = package_manager
+    command_args = _normalize_package_manager_args(
+        executable,
+        workspace_dir,
+        args,
+    )
     subprocess.run(
-        [executable, *command_prefix, *args],
+        [executable, *command_prefix, *command_args],
         cwd=str(package_dir),
         check=True,
     )
@@ -81,3 +86,19 @@ def _which_node_binary(name: str) -> str | None:
             return str(candidate)
 
     return None
+
+
+def _normalize_package_manager_args(
+    executable: str,
+    workspace_dir: Path,
+    args: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Keep managed workspace installs reproducible when using pnpm."""
+    if (
+        Path(executable).name == "pnpm"
+        and args == ("install",)
+        and (workspace_dir / "pnpm-lock.yaml").is_file()
+    ):
+        return ("install", "--frozen-lockfile")
+
+    return args
