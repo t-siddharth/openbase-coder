@@ -9,7 +9,6 @@ from typing import Any
 
 from openbase_coder_cli.services.installation import InstallationConfig
 
-
 BOILERSYNC_TIMEOUT_SECONDS = 30
 
 

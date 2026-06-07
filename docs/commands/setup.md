@@ -8,6 +8,12 @@ Run the full Openbase local installation flow.
 openbase-coder setup [OPTIONS]
 ```
 
+For first-time setup without installing the CLI first, prefer `uvx`:
+
+```bash
+uvx --python 3.13 openbase-coder setup
+```
+
 ## Options
 
 | Option | Default | Description |
@@ -39,7 +45,7 @@ openbase-coder setup [OPTIONS]
 ## Example
 
 ```bash
-openbase-coder setup \
+uvx --python 3.13 openbase-coder setup \
   --workspace-dir ~/.openbase/workspace \
   --env-file ~/.openbase/.env
 ```

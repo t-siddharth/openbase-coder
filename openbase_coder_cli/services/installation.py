@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from pathlib import Path
 
 from openbase_coder_cli.paths import INSTALLATION_JSON_PATH
 

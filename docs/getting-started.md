@@ -17,16 +17,26 @@ Optional but recommended:
 
 ## Install
 
+The preferred first-time setup path is `uvx`, which runs `openbase-coder` in an
+isolated `uv` tool environment without requiring a separate install step:
+
+```bash
+uvx --python 3.13 openbase-coder setup
+```
+
+Use a persistent install when you want `openbase-coder` to remain on your
+`PATH` after setup. The `uv tool` path is preferred:
+
+=== "uv tool"
+
+    ```bash
+    uv tool install --python 3.13 openbase-coder
+    ```
+
 === "pipx"
 
     ```bash
-    pipx install openbase-coder
-    ```
-
-=== "uv"
-
-    ```bash
-    uv tool install openbase-coder
+    pipx install --python python3.13 openbase-coder
     ```
 
 === "pip"
@@ -35,15 +45,17 @@ Optional but recommended:
     pip install openbase-coder
     ```
 
-Verify:
+Verify a persistent install:
 
 ```bash
 openbase-coder --version
 ```
 
+When using `uvx`, run one-off commands as `uvx --python 3.13 openbase-coder ...`.
+
 ## First-Time Setup
 
-Run:
+If you used the `uvx` one-liner above, setup has already started. Otherwise run:
 
 ```bash
 openbase-coder setup
@@ -64,7 +76,7 @@ What setup does:
 ## Start the Server
 
 ```bash
-openbase-coder server --host 0.0.0.0 --port 7999
+uvx --python 3.13 openbase-coder server --host 0.0.0.0 --port 7999
 ```
 
 By default this command:
@@ -77,14 +89,14 @@ By default this command:
 ## Health Check
 
 ```bash
-openbase-coder doctor
-openbase-coder services status
+uvx --python 3.13 openbase-coder doctor
+uvx --python 3.13 openbase-coder services status
 ```
 
 ## Authenticate With Openbase Cloud (Optional)
 
 ```bash
-openbase-coder login --email you@example.com
+uvx --python 3.13 openbase-coder login --email you@example.com
 ```
 
 This stores tokens in `~/.openbase/auth.json` for JWT-based auth flows.
@@ -92,9 +104,9 @@ This stores tokens in `~/.openbase/auth.json` for JWT-based auth flows.
 ## Next Steps
 
 - Learn command details in [Commands](commands/index.md)
-- Install your first plugin: `openbase-coder plugins add <local-repo-or-github-url>`
-- Discover bootstrap commands: `openbase-coder plugins bootstrappers`
-- Run plugin bootstrap flow: `openbase-coder bootstrap <name> --params-file <file.json>`
+- Install your first plugin: `uvx --python 3.13 openbase-coder plugins add <local-repo-or-github-url>`
+- Discover bootstrap commands: `uvx --python 3.13 openbase-coder plugins bootstrappers`
+- Run plugin bootstrap flow: `uvx --python 3.13 openbase-coder bootstrap <name> --params-file <file.json>`
 - Review environment and auth settings in [Configuration](configuration.md)
 - See all runtime artifacts in [Files and Paths](files-and-paths.md)
 - Map backend behavior to the iOS UI in [iOS App Tabs](ios-tabs.md)

@@ -27,25 +27,35 @@ runtime.
 - macOS for full setup and launchd service management
 - Python 3.13+
 - Git
-- `uv` recommended for install and local development
+- `uv` for the recommended install/setup flow and local development
 - Node package tooling for the bundled console build
 - `livekit-server` on `PATH` for voice services
 
-## Install
+## Quick Start
 
-With `uv`:
-
-```bash
-uv tool install openbase-coder
-```
-
-With `pipx`:
+Recommended one-line setup with `uvx`:
 
 ```bash
-pipx install openbase-coder
+uvx --python 3.13 openbase-coder setup
 ```
 
-Verify the install:
+This runs the latest published `openbase-coder` package in an isolated `uv`
+tool environment and starts the normal first-time setup flow.
+
+For a persistent command on your `PATH` after setup, install with `uv tool`:
+
+```bash
+uv tool install --python 3.13 openbase-coder
+openbase-coder setup
+```
+
+`pipx` is also supported when you already manage Python tools that way:
+
+```bash
+pipx install --python python3.13 openbase-coder
+```
+
+Verify a persistent install:
 
 ```bash
 openbase-coder --version
@@ -53,7 +63,7 @@ openbase-coder --version
 
 ## First-Time Setup
 
-Run:
+If you already installed the persistent `openbase-coder` command, run:
 
 ```bash
 openbase-coder setup
@@ -67,8 +77,8 @@ used by voice sessions.
 After setup, check the local runtime:
 
 ```bash
-openbase-coder doctor
-openbase-coder services status
+uvx --python 3.13 openbase-coder doctor
+uvx --python 3.13 openbase-coder services status
 ```
 
 ## Run The Server
@@ -76,27 +86,29 @@ openbase-coder services status
 For foreground development:
 
 ```bash
-openbase-coder server --host 0.0.0.0 --port 7999
+uvx --python 3.13 openbase-coder server --host 0.0.0.0 --port 7999
 ```
 
 For normal macOS background operation:
 
 ```bash
-openbase-coder services start
-openbase-coder services status
+uvx --python 3.13 openbase-coder services start
+uvx --python 3.13 openbase-coder services status
 ```
 
 ## Common Commands
 
 ```bash
-openbase-coder setup
-openbase-coder doctor
-openbase-coder login
-openbase-coder services status
-openbase-coder services logs django-cli
-openbase-coder plugins list
-openbase-coder bootstrap --help
+uvx --python 3.13 openbase-coder setup
+uvx --python 3.13 openbase-coder doctor
+uvx --python 3.13 openbase-coder login
+uvx --python 3.13 openbase-coder services status
+uvx --python 3.13 openbase-coder services logs django-cli
+uvx --python 3.13 openbase-coder plugins list
+uvx --python 3.13 openbase-coder bootstrap --help
 ```
+
+If you installed with `uv tool`, omit `uvx --python 3.13` from those commands.
 
 ## Documentation
 

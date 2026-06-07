@@ -14,17 +14,20 @@ It provides:
 ## Quick Start
 
 ```bash
-# Install (pick one)
-pipx install openbase-coder
-# or
-uv tool install openbase-coder
-
-# Bootstrap Openbase locally (macOS)
-openbase-coder setup
+# Bootstrap Openbase locally with uvx (macOS)
+uvx --python 3.13 openbase-coder setup
 
 # Run server in foreground
-openbase-coder server --host 0.0.0.0 --port 7999
+uvx --python 3.13 openbase-coder server --host 0.0.0.0 --port 7999
 ```
+
+For a persistent `openbase-coder` command, use:
+
+```bash
+uv tool install --python 3.13 openbase-coder
+```
+
+Then omit `uvx --python 3.13` from later commands.
 
 ## Documentation
 

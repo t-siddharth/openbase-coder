@@ -8,6 +8,7 @@ from urllib.parse import parse_qs
 import httpx
 from channels.middleware import BaseMiddleware
 from django.conf import settings
+
 from openbase_coder_cli.config.jwt_validation import InvalidTokenError, JWKSValidator
 
 logger = logging.getLogger(__name__)

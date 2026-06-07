@@ -6,7 +6,6 @@ Add your DRF serializers here.
 
 from __future__ import annotations
 
-from openbase_coder_cli.config.serializers import TimestampedModelSerializer
 
 # Example serializer - replace with your own serializers
 # from openbase_coder_cli.openbase_coder_cli_app.models import Item

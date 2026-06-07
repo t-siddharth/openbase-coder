@@ -4,8 +4,6 @@ Django app configuration for openbase_coder_cli_app.
 
 from __future__ import annotations
 
-import os
-
 from django.apps import AppConfig
 
 

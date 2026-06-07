@@ -7,8 +7,9 @@ import logging
 import httpx
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from openbase_coder_cli.config.jwt_validation import InvalidTokenError, JWKSValidator
 from rest_framework import authentication, exceptions
+
+from openbase_coder_cli.config.jwt_validation import InvalidTokenError, JWKSValidator
 
 logger = logging.getLogger(__name__)
 

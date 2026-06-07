@@ -1,6 +1,6 @@
+from openbase_coder_cli.services import launchd
 from openbase_coder_cli.services.definitions import ServiceDefinition
 from openbase_coder_cli.services.installation import InstallationConfig
-from openbase_coder_cli.services import launchd
 
 
 def test_generate_wrapper_includes_user_bin_paths(tmp_path, monkeypatch):

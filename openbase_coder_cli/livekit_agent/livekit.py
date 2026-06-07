@@ -1688,20 +1688,19 @@ class SpeechFormattingSynthesizeStream:
         if self._buffer:
             spoken_text = format_for_speech(self._buffer)
             final_text = spoken_text or "Technical output omitted, shown on screen."
-            if LIVEKIT_VERBOSE_LOGGING:
-                logger.info(
-                    "dispatch_timing stage=tts_stream_flush role=%s voice_id=%s "
-                    "voice_name=%s flush_count=%d original_len=%d text_len=%d "
-                    "text_hash=%s text_excerpt=%r",
-                    self._role,
-                    self._voice_id or "",
-                    self._voice_name or "",
-                    self._flush_count,
-                    len(self._buffer),
-                    len(final_text),
-                    hashlib.sha256(final_text.encode("utf-8")).hexdigest()[:12],
-                    final_text[:160],
-                )
+            logger.info(
+                "dispatch_timing stage=tts_stream_flush role=%s voice_id=%s "
+                "voice_name=%s flush_count=%d original_len=%d text_len=%d "
+                "text_hash=%s text_excerpt=%r",
+                self._role,
+                self._voice_id or "",
+                self._voice_name or "",
+                self._flush_count,
+                len(self._buffer),
+                len(final_text),
+                hashlib.sha256(final_text.encode("utf-8")).hexdigest()[:12],
+                final_text[:160],
+            )
             self._stream.push_text(final_text)
             self._buffer = ""
         elif LIVEKIT_VERBOSE_LOGGING:
