@@ -27,6 +27,9 @@ jobs:
       - name: Build docs
         run: uvx zensical build
 
+      - name: Configure custom domain
+        run: echo docs.openbase.cloud > site/CNAME
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
