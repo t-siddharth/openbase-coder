@@ -32,12 +32,35 @@ console.log("do not speak this");
 
     assert format_for_speech_segments(text) == [
         "Section: Next steps.",
-        "Item: Update read me dot M D.",
-        "Item: Run U V run pytest.",
-        "Item: Keep format for speech private for now.",
+        "Update read me dot M D.",
+        "Run U V run pytest.",
+        "Keep format for speech private for now.",
         "Omitted.",
     ]
     assert "console.log" not in format_for_speech(text)
+
+
+def test_formatter_speaks_unordered_lists_without_repeated_item_prefixes():
+    text = """Summary:
+- Fixed the TTS list handling.
+- Updated the Super Agent voice instructions.
+  - Avoid nested bullet narration too."""
+
+    assert (
+        format_for_speech(text)
+        == "Summary. Fixed the T T S list handling. Updated the Super Agent voice instructions. Avoid nested bullet narration too."
+    )
+
+
+def test_formatter_preserves_numbered_list_markers_for_speech():
+    text = """Next:
+1) Keep numbered lists numbered.
+2. Do not turn them into generic items."""
+
+    assert (
+        format_for_speech(text)
+        == "Next. One: Keep numbered lists numbered. Two: Do not turn them into generic items."
+    )
 
 
 def test_formatter_reduces_omitted_code_narration_to_one_word():
@@ -97,5 +120,5 @@ def test_formatter_truncates_after_speech_formatting():
 
     assert (
         format_for_speech(text, SpeechFormatOptions(max_chars=48))
-        == "Item: First A P I item. Item: Second T T S item."
+        == "First A P I item. Second T T S item."
     )

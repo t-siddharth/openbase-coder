@@ -136,7 +136,11 @@ def _parse_markdown_blocks(text: str, opts: SpeechFormatOptions) -> list[str]:
         if _looks_like_non_speech_output(body):
             omitted_output = True
             return
-        segments.append(f"{item.prefix}: {_humanize_inline(body)}")
+        spoken_body = _humanize_inline(body)
+        if item.prefix:
+            segments.append(f"{item.prefix}: {spoken_body}")
+        else:
+            segments.append(spoken_body)
 
     def append_code_summary(language: str, line_count: int) -> None:
         if not opts.summarize_code_blocks:
@@ -259,7 +263,7 @@ def _parse_list_item(match: re.Match[str]) -> _ListItem:
     if ordered:
         prefix = _number_word(int(ordered.group(1)))
     else:
-        prefix = "Sub-item" if indent >= 2 else "Item"
+        prefix = ""
     return _ListItem(prefix=prefix, body=body, indent=indent)
 
 
