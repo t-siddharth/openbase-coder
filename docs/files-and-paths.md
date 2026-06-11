@@ -6,7 +6,8 @@ This page lists the key files Openbase CLI creates or consumes.
 
 - Openbase data root: `~/.openbase`
 - Workspace clone (default): `~/.openbase/workspace`
-- Launchd plists: `~/Library/LaunchAgents`
+- Launchd plists (macOS): `~/Library/LaunchAgents`
+- systemd user units (Linux): `~/.config/systemd/user`
 
 ## Setup-Time Artifacts
 
@@ -41,7 +42,8 @@ otherwise setup records the resolved absolute `uv` path for the current machine.
 | Path Pattern | Created By | Purpose |
 |---|---|---|
 | `~/.openbase/launchd/<service>.sh` | `services install/regenerate` | Launch wrappers |
-| `~/Library/LaunchAgents/com.openbase.coder.<service>.plist` | `services install/regenerate` | launchd job definitions |
+| `~/Library/LaunchAgents/com.openbase.coder.<service>.plist` | `services install/regenerate` (macOS) | launchd job definitions |
+| `~/.config/systemd/user/com.openbase.coder.<service>.service` | `services install/regenerate` (Linux) | systemd user unit definitions |
 | `~/.openbase/logs/<service>.stdout.log` | launchd services | Service stdout logs |
 | `~/.openbase/logs/<service>.stderr.log` | launchd services | Service stderr logs |
 

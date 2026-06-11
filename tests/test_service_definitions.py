@@ -15,15 +15,18 @@ def test_livekit_server_service_supports_tailscale_and_local_modes():
     assert "    tailscale)" in command
     assert 'LIVEKIT_TCP_PORT="${LIVEKIT_TCP_PORT:-7881}"' in command
     assert 'LIVEKIT_NODE_IP_V6="$(tailscale ip -6 2>/dev/null | head -n 1)"' in command
-    assert 'Ignoring invalid Tailscale IPv4 value: $LIVEKIT_NODE_IP' in command
-    assert 'Ignoring invalid Tailscale IPv6 value: $LIVEKIT_NODE_IP_V6' in command
+    assert "Ignoring invalid Tailscale IPv4 value: $LIVEKIT_NODE_IP" in command
+    assert "Ignoring invalid Tailscale IPv6 value: $LIVEKIT_NODE_IP_V6" in command
     assert 'ifconfig 2>/dev/null | awk -v ip="$LIVEKIT_NODE_IP"' in command
     assert 'route -n get "$LIVEKIT_NODE_IP"' in command
     assert "%s\\n      - %s/128\\n" in command
     assert "tcp_port: %s" in command
     assert 'LIVEKIT_BIND_IP="${LIVEKIT_BIND_IP:-127.0.0.1}"' in command
-    assert 'enable_loopback_candidate: true' in command
-    assert '- lo0' in command
+    assert "enable_loopback_candidate: true" in command
+    assert 'LIVEKIT_LOOPBACK_IFACE="lo0"' in command
+    assert 'LIVEKIT_LOOPBACK_IFACE="lo"' in command
+    assert 'ip -o -4 addr show 2>/dev/null | awk -v ip="$LIVEKIT_NODE_IP"' in command
+    assert '"$LIVEKIT_LOOPBACK_IFACE"' in command
     assert '--bind "$LIVEKIT_BIND_IP"' in command
     assert service.cleanup_ports == (7880, 7881)
 
@@ -36,6 +39,24 @@ def test_codex_app_server_service_sets_model_defaults():
         workspace="/tmp/workspace",
     )
 
+    assert 'OPENBASE_CODEX_BACKEND="${OPENBASE_CODEX_BACKEND:-codex}"' in command
+    assert "claude|claude-code)" in command
+    assert 'CODEX_CLAUDE_MODEL="${CODEX_CLAUDE_MODEL:-claude-code}"' in command
+    assert (
+        'CODEX_CLAUDE_PROXY_COMMAND="${CODEX_CLAUDE_PROXY_COMMAND:-/tmp/workspace/codex-claude-proxy/proxy.mjs}"'
+        in command
+    )
+    assert (
+        'CODEX_CLAUDE_MODEL_CATALOG_JSON="${CODEX_CLAUDE_MODEL_CATALOG_JSON:-/tmp/workspace/codex-claude-proxy/model-catalog.json}"'
+        in command
+    )
+    assert (
+        "Claude Code proxy did not become ready at $CODEX_CLAUDE_PROXY_HEALTH_URL"
+        in command
+    )
+    assert "model_providers.claude-code-proxy=" in command
+    assert '-c "model_provider=\\"claude-code-proxy\\""' in command
+    assert '-c "model=\\"$CODEX_CLAUDE_MODEL\\""' in command
     assert 'CODEX_MODEL="${CODEX_MODEL:-gpt-5.5}"' in command
     assert (
         'CODEX_MODEL_REASONING_EFFORT="${CODEX_MODEL_REASONING_EFFORT:-high}"'
@@ -74,8 +95,11 @@ def test_django_service_uses_livekit_network_mode_for_room_url():
     )
 
     assert 'LIVEKIT_NETWORK_MODE="${LIVEKIT_NETWORK_MODE:-tailscale}"' in command
-    assert 'Ignoring invalid Tailscale IPv4 value: $LIVEKIT_NODE_IP' in command
-    assert 'LIVEKIT_NODE_IP is required to derive LIVEKIT_URL in Tailscale mode.' in command
+    assert "Ignoring invalid Tailscale IPv4 value: $LIVEKIT_NODE_IP" in command
+    assert (
+        "LIVEKIT_NODE_IP is required to derive LIVEKIT_URL in Tailscale mode."
+        in command
+    )
     assert 'export LIVEKIT_URL="ws://${LIVEKIT_NODE_IP}:7880"' in command
     assert 'export LIVEKIT_URL="${LIVEKIT_URL:-ws://localhost:7880}"' in command
 

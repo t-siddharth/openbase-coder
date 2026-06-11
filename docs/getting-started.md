@@ -4,7 +4,7 @@ This guide sets up Openbase locally using the `openbase-coder` CLI.
 
 ## Prerequisites
 
-- macOS (required for `setup` and `services`, which use launchd)
+- macOS (`setup` and `services` use launchd) or Linux (systemd user services); screen sharing/computer use is macOS-only
 - Python 3.13+
 - Git
 - `uv` (recommended)
@@ -71,7 +71,7 @@ What setup does:
 6. Initializes the CLI workspace and bundled LiveKit worker (`uv sync`, LiveKit model downloads).
 7. Writes Codex app-server defaults such as `CODEX_MODEL=gpt-5.5`, `CODEX_MODEL_REASONING_EFFORT=high`, `CODEX_SERVICE_TIER=fast`, `CODEX_APP_SERVER_URL`, and `LIVEKIT_CODEX_THREAD_CWD`.
 8. Builds `console`.
-9. Installs launchd services (unless `--skip-services`).
+9. Installs background services — launchd on macOS, systemd user units on Linux (unless `--skip-services`).
 
 ## Start the Server
 

@@ -22,11 +22,15 @@ SERVICES: list[ServiceDefinition] = [
             'LIVEKIT_NETWORK_MODE="${{LIVEKIT_NETWORK_MODE:-tailscale}}"\n'
             'LIVEKIT_TCP_PORT="${{LIVEKIT_TCP_PORT:-7881}}"\n'
             'LIVEKIT_UDP_PORT="${{LIVEKIT_UDP_PORT:-7882}}"\n'
+            'LIVEKIT_LOOPBACK_IFACE="lo0"\n'
+            'if [ "$(uname)" != "Darwin" ]; then\n'
+            '    LIVEKIT_LOOPBACK_IFACE="lo"\n'
+            "fi\n"
             'case "$LIVEKIT_NETWORK_MODE" in\n'
             "    local)\n"
             '        LIVEKIT_BIND_IP="${{LIVEKIT_BIND_IP:-127.0.0.1}}"\n'
             '        NODE_IP_ARGS=(--node-ip "$LIVEKIT_BIND_IP")\n'
-            '        LIVEKIT_CONFIG_BODY="$(printf \'rtc:\\n  tcp_port: %s\\n  udp_port: %s\\n  enable_loopback_candidate: true\\n  interfaces:\\n    includes:\\n      - lo0\\n  ips:\\n    includes:\\n      - 127.0.0.1/32\\n\' "$LIVEKIT_TCP_PORT" "$LIVEKIT_UDP_PORT")"\n'
+            '        LIVEKIT_CONFIG_BODY="$(printf \'rtc:\\n  tcp_port: %s\\n  udp_port: %s\\n  enable_loopback_candidate: true\\n  interfaces:\\n    includes:\\n      - %s\\n  ips:\\n    includes:\\n      - 127.0.0.1/32\\n\' "$LIVEKIT_TCP_PORT" "$LIVEKIT_UDP_PORT" "$LIVEKIT_LOOPBACK_IFACE")"\n'
             "        ;;\n"
             "    tailscale)\n"
             '        if [ -z "${{LIVEKIT_NODE_IP:-}}" ] && command -v tailscale >/dev/null 2>&1; then\n'
@@ -47,11 +51,20 @@ SERVICES: list[ServiceDefinition] = [
             '            echo "LIVEKIT_NODE_IP is required for Tailscale LiveKit signaling and media." >&2\n'
             "            exit 1\n"
             "        fi\n"
-            '        if [ -z "${{LIVEKIT_INTERFACE:-}}" ]; then\n'
-            '            LIVEKIT_INTERFACE="$(ifconfig 2>/dev/null | awk -v ip="$LIVEKIT_NODE_IP" \'BEGIN {{ iface = "" }} /^[a-z0-9]+:/ {{ iface = substr($1, 1, length($1) - 1) }} index($0, "inet " ip " ") {{ print iface; exit }}\')"\n'
-            "        fi\n"
-            '        if [ -z "$LIVEKIT_INTERFACE" ]; then\n'
-            '            LIVEKIT_INTERFACE="$(route -n get "$LIVEKIT_NODE_IP" 2>/dev/null | sed -n \'s/.*interface: //p\' | head -n 1)"\n'
+            '        if [ "$(uname)" = "Darwin" ]; then\n'
+            '            if [ -z "${{LIVEKIT_INTERFACE:-}}" ]; then\n'
+            '                LIVEKIT_INTERFACE="$(ifconfig 2>/dev/null | awk -v ip="$LIVEKIT_NODE_IP" \'BEGIN {{ iface = "" }} /^[a-z0-9]+:/ {{ iface = substr($1, 1, length($1) - 1) }} index($0, "inet " ip " ") {{ print iface; exit }}\')"\n'
+            "            fi\n"
+            '            if [ -z "$LIVEKIT_INTERFACE" ]; then\n'
+            '                LIVEKIT_INTERFACE="$(route -n get "$LIVEKIT_NODE_IP" 2>/dev/null | sed -n \'s/.*interface: //p\' | head -n 1)"\n'
+            "            fi\n"
+            "        else\n"
+            '            if [ -z "${{LIVEKIT_INTERFACE:-}}" ]; then\n'
+            '                LIVEKIT_INTERFACE="$(ip -o -4 addr show 2>/dev/null | awk -v ip="$LIVEKIT_NODE_IP" \'index($4, ip "/") == 1 {{ print $2; exit }}\')"\n'
+            "            fi\n"
+            '            if [ -z "$LIVEKIT_INTERFACE" ]; then\n'
+            '                LIVEKIT_INTERFACE="$(ip -4 route get "$LIVEKIT_NODE_IP" 2>/dev/null | sed -n \'s/.* dev \\([^ ]*\\).*/\\1/p\' | head -n 1)"\n'
+            "            fi\n"
             "        fi\n"
             '        if [ -z "$LIVEKIT_INTERFACE" ]; then\n'
             '            echo "LIVEKIT_INTERFACE is required for Tailscale LiveKit media." >&2\n'
@@ -59,7 +72,7 @@ SERVICES: list[ServiceDefinition] = [
             "        fi\n"
             '        LIVEKIT_BIND_IP="${{LIVEKIT_BIND_IP:-127.0.0.1}}"\n'
             '        NODE_IP_ARGS=(--node-ip "$LIVEKIT_NODE_IP")\n'
-            '        LIVEKIT_CONFIG_BODY="$(printf \'rtc:\\n  tcp_port: %s\\n  udp_port: %s\\n  enable_loopback_candidate: true\\n  interfaces:\\n    includes:\\n      - lo0\\n      - %s\\n  ips:\\n    includes:\\n      - 127.0.0.1/32\\n      - %s/32\\n\' "$LIVEKIT_TCP_PORT" "$LIVEKIT_UDP_PORT" "$LIVEKIT_INTERFACE" "$LIVEKIT_NODE_IP")"\n'
+            '        LIVEKIT_CONFIG_BODY="$(printf \'rtc:\\n  tcp_port: %s\\n  udp_port: %s\\n  enable_loopback_candidate: true\\n  interfaces:\\n    includes:\\n      - %s\\n      - %s\\n  ips:\\n    includes:\\n      - 127.0.0.1/32\\n      - %s/32\\n\' "$LIVEKIT_TCP_PORT" "$LIVEKIT_UDP_PORT" "$LIVEKIT_LOOPBACK_IFACE" "$LIVEKIT_INTERFACE" "$LIVEKIT_NODE_IP")"\n'
             '        if [ -n "${{LIVEKIT_NODE_IP_V6:-}}" ]; then\n'
             '            LIVEKIT_CONFIG_BODY="$(printf \'%s\\n      - %s/128\\n\' "$LIVEKIT_CONFIG_BODY" "$LIVEKIT_NODE_IP_V6")"\n'
             "        fi\n"
@@ -82,14 +95,70 @@ SERVICES: list[ServiceDefinition] = [
         command_template=(
             'export CODEX_HOME="{data_dir}/codex_home"\n'
             'mkdir -p "$CODEX_HOME"\n'
-            'CODEX_MODEL="${{CODEX_MODEL:-gpt-5.5}}"\n'
             'CODEX_MODEL_REASONING_EFFORT="${{CODEX_MODEL_REASONING_EFFORT:-high}}"\n'
             'CODEX_SERVICE_TIER="${{CODEX_SERVICE_TIER:-fast}}"\n'
-            "exec {codex} app-server "
+            'OPENBASE_CODEX_BACKEND="${{OPENBASE_CODEX_BACKEND:-codex}}"\n'
+            'case "$OPENBASE_CODEX_BACKEND" in\n'
+            "    claude|claude-code)\n"
+            '        CODEX_CLAUDE_MODEL="${{CODEX_CLAUDE_MODEL:-claude-code}}"\n'
+            '        CODEX_CLAUDE_PROXY_PORT="${{CODEX_CLAUDE_PROXY_PORT:-6066}}"\n'
+            '        CODEX_CLAUDE_PROXY_BASE_URL="${{CODEX_CLAUDE_PROXY_BASE_URL:-http://127.0.0.1:$CODEX_CLAUDE_PROXY_PORT/v1}}"\n'
+            '        CODEX_CLAUDE_PROXY_HEALTH_URL="${{CODEX_CLAUDE_PROXY_HEALTH_URL:-http://127.0.0.1:$CODEX_CLAUDE_PROXY_PORT/health}}"\n'
+            '        CODEX_CLAUDE_PROXY_COMMAND="${{CODEX_CLAUDE_PROXY_COMMAND:-{workspace}/codex-claude-proxy/proxy.mjs}}"\n'
+            '        CODEX_CLAUDE_MODEL_CATALOG_JSON="${{CODEX_CLAUDE_MODEL_CATALOG_JSON:-{workspace}/codex-claude-proxy/model-catalog.json}}"\n'
+            '        CODEX_MODEL_REASONING_SUMMARY="${{CODEX_MODEL_REASONING_SUMMARY:-concise}}"\n'
+            '        CODEX_WEB_SEARCH="${{CODEX_WEB_SEARCH:-live}}"\n'
+            '        if [ ! -f "$CODEX_CLAUDE_MODEL_CATALOG_JSON" ]; then\n'
+            '            echo "Claude Code model catalog not found at $CODEX_CLAUDE_MODEL_CATALOG_JSON" >&2\n'
+            "            exit 1\n"
+            "        fi\n"
+            '        CODEX_CLAUDE_PROXY_PID=""\n'
+            '        if ! curl -fsS "$CODEX_CLAUDE_PROXY_HEALTH_URL" >/dev/null 2>&1; then\n'
+            '            if [ ! -x "$CODEX_CLAUDE_PROXY_COMMAND" ]; then\n'
+            '                echo "Claude Code proxy command not executable at $CODEX_CLAUDE_PROXY_COMMAND" >&2\n'
+            "                exit 1\n"
+            "            fi\n"
+            '            "$CODEX_CLAUDE_PROXY_COMMAND" --port "$CODEX_CLAUDE_PROXY_PORT" --debug &\n'
+            '            CODEX_CLAUDE_PROXY_PID="$!"\n'
+            "            for _openbase_codex_proxy_wait in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do\n"
+            '                if curl -fsS "$CODEX_CLAUDE_PROXY_HEALTH_URL" >/dev/null 2>&1; then\n'
+            "                    break\n"
+            "                fi\n"
+            "                sleep 0.25\n"
+            "            done\n"
+            "        fi\n"
+            '        if ! curl -fsS "$CODEX_CLAUDE_PROXY_HEALTH_URL" >/dev/null 2>&1; then\n'
+            '            echo "Claude Code proxy did not become ready at $CODEX_CLAUDE_PROXY_HEALTH_URL" >&2\n'
+            "            exit 1\n"
+            "        fi\n"
+            "        cleanup_claude_proxy() {{\n"
+            '            if [ -n "$CODEX_CLAUDE_PROXY_PID" ]; then\n'
+            '                kill "$CODEX_CLAUDE_PROXY_PID" >/dev/null 2>&1 || true\n'
+            "            fi\n"
+            "        }}\n"
+            "        trap cleanup_claude_proxy EXIT INT TERM\n"
+            "        {codex} app-server "
+            "-c \"model_providers.claude-code-proxy={{ name = 'Claude Proxy', base_url = '$CODEX_CLAUDE_PROXY_BASE_URL', wire_api = 'responses', requires_openai_auth = false }}\" "
+            '-c "model_provider=\\"claude-code-proxy\\"" '
+            '-c "model=\\"$CODEX_CLAUDE_MODEL\\"" '
+            '-c "model_catalog_json=\\"$CODEX_CLAUDE_MODEL_CATALOG_JSON\\"" '
+            '-c "model_reasoning_summary=\\"$CODEX_MODEL_REASONING_SUMMARY\\"" '
+            '-c "web_search=\\"$CODEX_WEB_SEARCH\\"" '
+            "--listen ws://127.0.0.1:4500\n"
+            "        ;;\n"
+            '    codex|openai|"")\n'
+            '        CODEX_MODEL="${{CODEX_MODEL:-gpt-5.5}}"\n'
+            "        exec {codex} app-server "
             '-c "model=\\"$CODEX_MODEL\\"" '
             '-c "model_reasoning_effort=\\"$CODEX_MODEL_REASONING_EFFORT\\"" '
             '-c "service_tier=\\"$CODEX_SERVICE_TIER\\"" '
-            "--listen ws://127.0.0.1:4500"
+            "--listen ws://127.0.0.1:4500\n"
+            "        ;;\n"
+            "    *)\n"
+            '        echo "Unsupported OPENBASE_CODEX_BACKEND: $OPENBASE_CODEX_BACKEND" >&2\n'
+            "        exit 1\n"
+            "        ;;\n"
+            "esac"
         ),
         workdir_template="{workspace}",
         port=4500,

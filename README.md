@@ -17,15 +17,16 @@ runtime.
   project metadata, and service status
 - Local per-machine thread favorite metadata exposed on thread list/detail APIs
 - Voice-agent runtime built around LiveKit and Codex app-server sessions
-- One-command macOS setup for the Openbase workspace, environment file,
-  console build, launchd services, and default agent instructions
+- One-command macOS/Linux setup for the Openbase workspace, environment file,
+  console build, background services, and default agent instructions
 - Plugin installation and bootstrap commands for extending the local runtime
 - Openbase Cloud login support for authenticated client workflows
 - A local web console served by the CLI
 
 ## Requirements
 
-- macOS for full setup and launchd service management
+- macOS (launchd) or Linux (systemd user services) for setup and service
+  management; screen sharing and computer use are macOS-only
 - Python 3.13+
 - Git
 - `uv` for the recommended install/setup flow and local development

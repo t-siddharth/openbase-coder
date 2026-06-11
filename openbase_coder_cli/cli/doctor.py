@@ -46,13 +46,16 @@ def _parse_env_file() -> dict[str, str]:
 def _get_listening_sockets() -> list[tuple[str, int]]:
     """Return (bind_address, port) for all TCP LISTEN sockets.
 
-    Uses lsof to query the system.
+    Uses lsof to query the system, falling back to ss when lsof is missing.
     """
-    result = subprocess.run(
-        ["lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return _get_listening_sockets_ss()
     seen: set[tuple[str, int]] = set()
     sockets: list[tuple[str, int]] = []
     for line in result.stdout.splitlines()[1:]:  # skip header
@@ -63,6 +66,35 @@ def _get_listening_sockets() -> list[tuple[str, int]]:
         name = parts[8]
         if ":" not in name:
             continue
+        host, _, port_str = name.rpartition(":")
+        try:
+            port = int(port_str)
+        except ValueError:
+            continue
+        key = (host, port)
+        if key not in seen:
+            seen.add(key)
+            sockets.append(key)
+    return sockets
+
+
+def _get_listening_sockets_ss() -> list[tuple[str, int]]:
+    try:
+        result = subprocess.run(
+            ["ss", "-ltnH"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return []
+    seen: set[tuple[str, int]] = set()
+    sockets: list[tuple[str, int]] = []
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        # Local Address:Port column is like "0.0.0.0:7880" or "[::]:7880"
+        name = parts[3]
         host, _, port_str = name.rpartition(":")
         try:
             port = int(port_str)

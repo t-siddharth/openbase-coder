@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -21,12 +23,19 @@ from openbase_coder_cli.services.definitions import SERVICES, ServiceDefinition
 from openbase_coder_cli.services.installation import InstallationConfig
 
 
+def _is_macos() -> bool:
+    return platform.system() == "Darwin"
+
+
 def _resolve_binary(name: str, homebrew_fallback: str | None = None) -> str:
     path = shutil.which(name)
     if path:
         return path
+    fallbacks: list[Path] = []
     if homebrew_fallback:
-        fallback = Path(homebrew_fallback)
+        fallbacks.append(Path(homebrew_fallback))
+    fallbacks.append(Path.home() / ".local" / "bin" / name)
+    for fallback in fallbacks:
         if fallback.is_file():
             return str(fallback)
     raise click.ClickException(
@@ -138,12 +147,15 @@ def _service_command(pid: int) -> str:
 
 
 def _listening_pids(port: int) -> set[int]:
-    result = subprocess.run(
-        ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return _listening_pids_ss(port)
     pids: set[int] = set()
     for line in result.stdout.splitlines():
         line = line.strip()
@@ -153,6 +165,22 @@ def _listening_pids(port: int) -> set[int]:
             pids.add(int(line))
         except ValueError:
             continue
+    return pids
+
+
+def _listening_pids_ss(port: int) -> set[int]:
+    try:
+        result = subprocess.run(
+            ["ss", "-ltnpH", f"sport = :{port}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return set()
+    pids: set[int] = set()
+    for match in re.finditer(r"pid=(\d+)", result.stdout):
+        pids.add(int(match.group(1)))
     return pids
 
 
@@ -200,7 +228,12 @@ def _cleanup_lingering_processes(svc: ServiceDefinition) -> None:
 def _ensure_launchd_paths() -> None:
     DEFAULT_LOG_DIR.mkdir(parents=True, exist_ok=True)
     LAUNCHD_WRAPPER_DIR.mkdir(parents=True, exist_ok=True)
-    PLIST_DIR.mkdir(parents=True, exist_ok=True)
+    if _is_macos():
+        PLIST_DIR.mkdir(parents=True, exist_ok=True)
+    else:
+        from openbase_coder_cli.paths import SYSTEMD_UNIT_DIR
+
+        SYSTEMD_UNIT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _write_service_files(
@@ -209,7 +242,12 @@ def _write_service_files(
     binaries: dict[str, str],
 ) -> None:
     generate_wrapper(svc, config, binaries)
-    generate_plist(svc, config)
+    if _is_macos():
+        generate_plist(svc, config)
+    else:
+        from openbase_coder_cli.services.systemd import generate_unit
+
+        generate_unit(svc, config)
 
 
 def _prepare_service_start(svc: ServiceDefinition) -> None:
@@ -306,6 +344,12 @@ def _launchctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
 
 
 def launchctl_bootstrap(svc: ServiceDefinition) -> None:
+    if not _is_macos():
+        from openbase_coder_cli.services.systemd import systemd_bootstrap
+
+        systemd_bootstrap(svc)
+        return
+
     label = _service_label(svc)
     plist = _plist_path(svc)
     domain = f"gui/{_uid()}"
@@ -321,6 +365,11 @@ def launchctl_bootstrap(svc: ServiceDefinition) -> None:
 
 
 def launchctl_bootout(svc: ServiceDefinition) -> bool:
+    if not _is_macos():
+        from openbase_coder_cli.services.systemd import systemd_bootout
+
+        return systemd_bootout(svc)
+
     label = _service_label(svc)
     result = _launchctl("bootout", f"gui/{_uid()}/{label}", check=False)
     _cleanup_lingering_processes(svc)
@@ -328,6 +377,11 @@ def launchctl_bootout(svc: ServiceDefinition) -> bool:
 
 
 def launchctl_kickstart(svc: ServiceDefinition) -> bool:
+    if not _is_macos():
+        from openbase_coder_cli.services.systemd import systemd_kickstart
+
+        return systemd_kickstart(svc)
+
     label = _service_label(svc)
     _prepare_service_start(svc)
     result = _launchctl("kickstart", "-k", f"gui/{_uid()}/{label}", check=False)
@@ -335,6 +389,11 @@ def launchctl_kickstart(svc: ServiceDefinition) -> bool:
 
 
 def launchctl_kill(svc: ServiceDefinition) -> bool:
+    if not _is_macos():
+        from openbase_coder_cli.services.systemd import systemd_kill
+
+        return systemd_kill(svc)
+
     label = _service_label(svc)
     result = _launchctl("kill", "SIGTERM", f"gui/{_uid()}/{label}", check=False)
     _cleanup_lingering_processes(svc)
@@ -342,6 +401,11 @@ def launchctl_kill(svc: ServiceDefinition) -> bool:
 
 
 def launchctl_status(svc: ServiceDefinition) -> dict:
+    if not _is_macos():
+        from openbase_coder_cli.services.systemd import systemd_status
+
+        return systemd_status(svc)
+
     label = _service_label(svc)
     result = _launchctl("print", f"gui/{_uid()}/{label}", check=False)
     if result.returncode != 0:
@@ -399,10 +463,13 @@ def uninstall_all_services() -> None:
         else:
             click.echo(f"  {svc.name} was not loaded")
 
-        plist = _plist_path(svc)
-        wrapper = _wrapper_path(svc)
-        plist.unlink(missing_ok=True)
-        wrapper.unlink(missing_ok=True)
+        if _is_macos():
+            _plist_path(svc).unlink(missing_ok=True)
+        else:
+            from openbase_coder_cli.services.systemd import remove_unit
+
+            remove_unit(svc)
+        _wrapper_path(svc).unlink(missing_ok=True)
 
     click.echo()
     click.echo("All services uninstalled.")

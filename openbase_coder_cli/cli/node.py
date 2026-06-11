@@ -8,7 +8,9 @@ from pathlib import Path
 import click
 
 
-def run_workspace_package_command(workspace_dir: Path, package_dir: Path, *args: str) -> bool:
+def run_workspace_package_command(
+    workspace_dir: Path, package_dir: Path, *args: str
+) -> bool:
     """Run a package-manager command for a workspace package."""
     package_manager = _resolve_package_manager(workspace_dir, package_dir)
     if package_manager is None:
@@ -77,6 +79,7 @@ def _which_node_binary(name: str) -> str | None:
     candidates.extend(
         [
             Path.home() / "Library" / "pnpm" / name,
+            Path.home() / ".local" / "share" / "pnpm" / name,
             Path("/opt/homebrew/bin") / name,
             Path("/usr/local/bin") / name,
         ]

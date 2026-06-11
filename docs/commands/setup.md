@@ -23,11 +23,11 @@ uvx --python 3.13 openbase-coder setup
 | `--assembly-ai-api-key TEXT` | env `ASSEMBLY_AI_API_KEY` | Optional STT key |
 | `--cartesia-api-key TEXT` | env `CARTESIA_API_KEY` | Optional TTS key |
 | `--skip-clone` | `false` | Skip workspace clone/pull |
-| `--skip-services` | `false` | Skip launchd install |
+| `--skip-services` | `false` | Skip service install |
 
 ## Behavior Details
 
-`setup` is macOS-only and performs these phases:
+`setup` runs on macOS (launchd) and Linux (systemd user services) and performs these phases:
 
 1. Ensures `~/.openbase` exists.
 2. Clones/pulls `openbase-coder-workspace`.
@@ -42,7 +42,7 @@ uvx --python 3.13 openbase-coder setup
 11. Configures `~/.openbase/codex_home/config.toml` with full Codex local access (`sandbox_mode = "danger-full-access"`), disabled permission prompts, and the Super Agents MCP server. The MCP command prefers the workspace venv executable and falls back to the resolved local `uv` path.
 12. Writes Codex app-server defaults like `CODEX_MODEL=gpt-5.5`, `CODEX_MODEL_REASONING_EFFORT=high`, `CODEX_SERVICE_TIER=fast`, `CODEX_APP_SERVER_URL`, and `LIVEKIT_CODEX_THREAD_CWD` into the shared `.env`.
 13. Builds `console`.
-14. Installs launchd services unless skipped.
+14. Installs background services (launchd on macOS, systemd user units on Linux) unless skipped.
 
 ## Example
 

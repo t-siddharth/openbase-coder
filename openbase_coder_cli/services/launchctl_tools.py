@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import plistlib
 import shutil
 import subprocess
@@ -67,12 +68,21 @@ class LaunchctlService:
 
 
 def list_launchctl_services_payload(include_ignored: bool = False) -> dict:
+    if platform.system() != "Darwin":
+        from openbase_coder_cli.services.systemd import list_systemd_services_payload
+
+        return list_systemd_services_payload(include_ignored)
+
     runtime_jobs, runtime_error = _list_runtime_jobs()
     services = _read_launch_agents(runtime_jobs)
     ignored_labels = set(get_ignored_launchctl_labels())
     if not include_ignored:
-        services = [service for service in services if service.label not in ignored_labels]
-    services.sort(key=lambda service: (not service.running, not service.loaded, service.label))
+        services = [
+            service for service in services if service.label not in ignored_labels
+        ]
+    services.sort(
+        key=lambda service: (not service.running, not service.loaded, service.label)
+    )
     return {
         "services": [service.to_dict() for service in services],
         "error": runtime_error,
@@ -81,6 +91,12 @@ def list_launchctl_services_payload(include_ignored: bool = False) -> dict:
 
 
 def run_launchctl_service_action(label: str, action: str) -> None:
+    if platform.system() != "Darwin":
+        from openbase_coder_cli.services.systemd import run_systemd_service_action
+
+        run_systemd_service_action(label, action)
+        return
+
     if action not in {"start", "stop", "restart"}:
         raise click.ClickException(f"Unsupported launchctl action '{action}'.")
 
@@ -135,7 +151,9 @@ def _find_launch_agent(label: str) -> LaunchctlService:
     for service in _read_launch_agents({}):
         if service.label == label:
             return service
-    raise click.ClickException(f"LaunchAgent '{label}' was not found in {LAUNCH_AGENTS_DIR}.")
+    raise click.ClickException(
+        f"LaunchAgent '{label}' was not found in {LAUNCH_AGENTS_DIR}."
+    )
 
 
 def _read_launch_agents(

@@ -88,7 +88,7 @@ CODEX_HOME_DEFAULT_DISPATCHER_CONFIG = {
 @click.option(
     "--skip-services",
     is_flag=True,
-    help="Skip launchd service installation.",
+    help="Skip background service installation.",
 )
 def setup(
     workspace_dir: str,
@@ -99,8 +99,8 @@ def setup(
     skip_services: bool,
 ) -> None:
     """Full install flow for Openbase Coder."""
-    if platform.system() != "Darwin":
-        raise click.ClickException("Setup is only supported on macOS.")
+    if platform.system() not in ("Darwin", "Linux"):
+        raise click.ClickException("Setup is only supported on macOS and Linux.")
 
     OPENBASE_BASE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -144,7 +144,8 @@ def setup(
     # --- Install services ---
     if not skip_services:
         click.echo()
-        click.echo("Installing launchd services...")
+        service_manager = "launchd" if platform.system() == "Darwin" else "systemd"
+        click.echo(f"Installing {service_manager} services...")
         install_all_services(config)
     else:
         click.echo("Skipped service installation (--skip-services).")
@@ -190,7 +191,9 @@ def _update_existing_workspace(ws: Path) -> None:
                 "Resetting managed install workspace before update; "
                 "local generated changes are discarded."
             )
-            subprocess.run(["git", "-C", str(ws), "fetch", "origin", "main"], check=True)
+            subprocess.run(
+                ["git", "-C", str(ws), "fetch", "origin", "main"], check=True
+            )
             subprocess.run(
                 ["git", "-C", str(ws), "reset", "--hard", "origin/main"],
                 check=True,
@@ -228,7 +231,9 @@ def _update_install_set_repos(ws: Path) -> None:
                 check=True,
             )
         else:
-            subprocess.run(["git", "-C", str(repo_path), "pull", "--ff-only"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo_path), "pull", "--ff-only"], check=True
+            )
 
 
 def _install_set_repo_names(ws: Path) -> list[str]:
@@ -344,7 +349,9 @@ def _ensure_codex_home_dispatcher_config() -> None:
         json.dumps(CODEX_HOME_DEFAULT_DISPATCHER_CONFIG, indent=2) + "\n",
         encoding="utf-8",
     )
-    click.echo(f"Created Codex home dispatcher config at {CODEX_DISPATCHER_CONFIG_PATH}")
+    click.echo(
+        f"Created Codex home dispatcher config at {CODEX_DISPATCHER_CONFIG_PATH}"
+    )
 
 
 def _symlink_codex_home_skills(workspace_dir: str) -> None:
@@ -455,11 +462,7 @@ def _ensure_toml_root_values(
     root_lines = lines[:first_table_index]
     table_lines = lines[first_table_index:]
     keys = {key for key, _value in values}
-    updated_root = [
-        line
-        for line in root_lines
-        if _toml_root_key(line) not in keys
-    ]
+    updated_root = [line for line in root_lines if _toml_root_key(line) not in keys]
 
     while updated_root and not updated_root[-1].strip():
         updated_root.pop()
@@ -587,7 +590,7 @@ def _install_cli_shim(workspace_dir: str) -> None:
     shim = (
         "#!/bin/sh\n"
         f"cd {shlex.quote(str(cli_dir))} || exit 1\n"
-        f"exec {shlex.quote(uv_bin)} run openbase-coder \"$@\"\n"
+        f'exec {shlex.quote(uv_bin)} run openbase-coder "$@"\n'
     )
     shim_path.write_text(shim)
     shim_path.chmod(0o755)
@@ -617,14 +620,14 @@ def _ensure_env_file(
         "# Use tailscale for phone-to-computer voice calls; use local for loopback-only testing.",
         "LIVEKIT_NETWORK_MODE=tailscale",
         "LIVEKIT_URL=ws://localhost:7880",
-        "# In tailscale mode, launchd rewrites localhost LIVEKIT_URL to the Tailscale IPv4 address.",
+        "# In tailscale mode, the managed service rewrites localhost LIVEKIT_URL to the Tailscale IPv4 address.",
         "# The local Python agent still registers over localhost unless LIVEKIT_AGENT_URL is set.",
         "# LIVEKIT_AGENT_URL=ws://localhost:7880",
         "# Override the Tailscale IP LiveKit advertises in ICE candidates.",
-        "# If unset in tailscale mode, the launchd service uses the first `tailscale ip -4` value.",
+        "# If unset in tailscale mode, the managed service uses the first `tailscale ip -4` value.",
         "# LIVEKIT_NODE_IP=100.x.y.z",
         "# Override the Tailscale interface used for LiveKit media.",
-        "# If unset, the launchd service derives it from LIVEKIT_NODE_IP.",
+        "# If unset, the managed service derives it from LIVEKIT_NODE_IP.",
         "# LIVEKIT_INTERFACE=utun4",
         "# Override the address LiveKit binds locally. Keep this on localhost when using Tailscale Serve.",
         "# LIVEKIT_BIND_IP=127.0.0.1",
@@ -638,7 +641,13 @@ def _ensure_env_file(
         "# OPENBASE_CODER_CLI_HOST=127.0.0.1",
         "# Allow localhost and Tailscale Serve hostnames.",
         "OPENBASE_CODER_CLI_ALLOWED_HOSTS=localhost,127.0.0.1,.ts.net",
-        "# Codex app-server defaults used by the launchd service.",
+        "# Codex app-server defaults used by the managed service.",
+        "# Set OPENBASE_CODEX_BACKEND=claude-code to run Openbase Coder and Super Agents through codex-claude-proxy.",
+        "# OPENBASE_CODEX_BACKEND=claude-code",
+        "# The managed service defaults to the workspace codex-claude-proxy checkout.",
+        "# CODEX_CLAUDE_PROXY_COMMAND=/path/to/openbase-coder-workspace/codex-claude-proxy/proxy.mjs",
+        "# CODEX_CLAUDE_PROXY_BASE_URL=http://127.0.0.1:6066/v1",
+        "# CODEX_CLAUDE_MODEL_CATALOG_JSON=/path/to/openbase-coder-workspace/codex-claude-proxy/model-catalog.json",
         "CODEX_MODEL=gpt-5.5",
         "CODEX_MODEL_REASONING_EFFORT=high",
         "CODEX_SERVICE_TIER=fast",

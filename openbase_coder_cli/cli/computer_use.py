@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import subprocess
 import time
 from pathlib import Path
@@ -16,9 +17,14 @@ DEFAULT_COMPANION_SECRET = "openbase-livekit-companion-local"
 COMPANION_IDENTITY = "openbase-screen-share-companion"
 COMPANION_NAME = "Openbase Screen Share"
 
+
 @click.group("computer-use")
 def computer_use() -> None:
     """Use the desktop screen-share companion for OpenAI Computer Use."""
+    if platform.system() != "Darwin":
+        raise click.ClickException(
+            "Computer use and screen sharing are only supported on macOS."
+        )
 
 
 @computer_use.command("start")
@@ -31,7 +37,13 @@ def computer_use() -> None:
     is_flag=True,
     help="Do not launch the companion app if its IPC server is not reachable.",
 )
-def start(instructions: tuple[str, ...], room_name: str, model: str, max_steps: int, no_launch: bool) -> None:
+def start(
+    instructions: tuple[str, ...],
+    room_name: str,
+    model: str,
+    max_steps: int,
+    no_launch: bool,
+) -> None:
     """Start screen sharing, then start one computer-use run."""
     text = " ".join(instructions).strip()
     if not text:
@@ -82,7 +94,9 @@ def steer(instructions: tuple[str, ...]) -> None:
         raise click.ClickException("Steering instructions are required.")
 
     response = CompanionClient().steer_computer_use(text)
-    click.echo(f"Computer-use steering updated ({response.get('state') or 'controlling'}).")
+    click.echo(
+        f"Computer-use steering updated ({response.get('state') or 'controlling'})."
+    )
 
 
 @computer_use.command("queue")
@@ -94,7 +108,9 @@ def queue(instructions: tuple[str, ...]) -> None:
         raise click.ClickException("Queued instructions are required.")
 
     response = CompanionClient().queue_computer_use(text)
-    click.echo(f"Computer-use instruction queued ({response.get('state') or 'controlling'}).")
+    click.echo(
+        f"Computer-use instruction queued ({response.get('state') or 'controlling'})."
+    )
 
 
 @computer_use.command("interrupt")
@@ -126,7 +142,9 @@ def _load_companion_session(room_name: str) -> dict[str, Any]:
     room_url = payload.get("roomUrl")
     token = payload.get("companionToken")
     if not room_url or not token:
-        raise click.ClickException("Companion session response is missing roomUrl or companionToken.")
+        raise click.ClickException(
+            "Companion session response is missing roomUrl or companionToken."
+        )
 
     return {
         "roomUrl": room_url,
@@ -139,7 +157,11 @@ def _load_companion_session(room_name: str) -> dict[str, Any]:
 
 class CompanionClient:
     def __init__(self) -> None:
-        self.port = int(os.environ.get("OPENBASE_LIVEKIT_COMPANION_IPC_PORT", DEFAULT_COMPANION_PORT))
+        self.port = int(
+            os.environ.get(
+                "OPENBASE_LIVEKIT_COMPANION_IPC_PORT", DEFAULT_COMPANION_PORT
+            )
+        )
         self.secret = os.environ.get(
             "OPENBASE_LIVEKIT_COMPANION_IPC_SECRET",
             DEFAULT_COMPANION_SECRET,
@@ -148,6 +170,11 @@ class CompanionClient:
     def ensure_running(self) -> None:
         if self._status_or_none() is not None:
             return
+
+        if platform.system() != "Darwin":
+            raise click.ClickException(
+                "The screen-share companion app is only supported on macOS."
+            )
 
         app_path = _find_companion_app()
         if app_path is None:
@@ -188,7 +215,9 @@ class CompanionClient:
                 return
             last_error = "companion IPC did not respond"
 
-        raise click.ClickException(f"LiveKit companion did not become ready: {last_error}")
+        raise click.ClickException(
+            f"LiveKit companion did not become ready: {last_error}"
+        )
 
     def status(self) -> dict[str, Any]:
         return self._request("GET", "/status")
@@ -219,10 +248,14 @@ class CompanionClient:
         return self._request("POST", "/computer-use/start", payload)
 
     def steer_computer_use(self, instructions: str) -> dict[str, Any]:
-        return self._request("POST", "/computer-use/steer", {"instructions": instructions})
+        return self._request(
+            "POST", "/computer-use/steer", {"instructions": instructions}
+        )
 
     def queue_computer_use(self, instructions: str) -> dict[str, Any]:
-        return self._request("POST", "/computer-use/queue", {"instructions": instructions})
+        return self._request(
+            "POST", "/computer-use/queue", {"instructions": instructions}
+        )
 
     def interrupt_computer_use(self) -> dict[str, Any]:
         return self._request("POST", "/computer-use/interrupt", {})
@@ -261,10 +294,14 @@ class CompanionClient:
         return self._request("POST", "/claude-chrome/start", payload)
 
     def steer_claude_chrome(self, instructions: str) -> dict[str, Any]:
-        return self._request("POST", "/claude-chrome/steer", {"instructions": instructions})
+        return self._request(
+            "POST", "/claude-chrome/steer", {"instructions": instructions}
+        )
 
     def queue_claude_chrome(self, instructions: str) -> dict[str, Any]:
-        return self._request("POST", "/claude-chrome/queue", {"instructions": instructions})
+        return self._request(
+            "POST", "/claude-chrome/queue", {"instructions": instructions}
+        )
 
     def abort_claude_chrome(self) -> dict[str, Any]:
         return self._request("POST", "/claude-chrome/abort", {})
@@ -275,13 +312,17 @@ class CompanionClient:
         except click.ClickException:
             return None
 
-    def _request(self, method: str, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request(
+        self, method: str, path: str, json: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         url = f"http://127.0.0.1:{self.port}{path}"
         headers = {"X-Openbase-Companion-Secret": self.secret}
         try:
             response = httpx.request(method, url, headers=headers, json=json, timeout=5)
         except httpx.HTTPError as exc:
-            raise click.ClickException(f"Unable to reach LiveKit companion: {exc}") from None
+            raise click.ClickException(
+                f"Unable to reach LiveKit companion: {exc}"
+            ) from None
 
         if response.status_code >= 400:
             raise click.ClickException(response_error(response))
