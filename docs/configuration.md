@@ -33,6 +33,39 @@ Openbase CLI reads configuration from environment variables (usually loaded from
 | `ASSEMBLY_AI_API_KEY`      | Optional | Speech-to-text provider      |
 | `CARTESIA_API_KEY`         | Optional | Text-to-speech provider      |
 | `CARTESIA_VOICE_ID`        | Optional | Text-to-speech voice ID      |
+| `OPENBASE_CODER_TTS_REPLACEMENTS_PATH` | Optional | Override the editable TTS replacements file path |
+
+## TTS Replacements
+
+Openbase Coder formats spoken text before sending it to Cartesia. Built-in
+pronunciation defaults cover common acronyms such as `AWS`, `API`, `TTS`, and
+`LLM`.
+
+To add or override pronunciations without rebuilding or restarting Openbase or
+the voice process, edit:
+
+```text
+~/.openbase/tts-replacements.json
+```
+
+The formatter checks this file on each TTS formatting pass and reloads it when
+the path, modification time, or size changes. The file is optional. If it is
+missing or invalid, Openbase Coder keeps using built-in defaults.
+
+Example:
+
+```json
+{
+  "acronyms": ["MCP"],
+  "replacements": {
+    "OpenAI": "Open A I",
+    "foobarbaz": "foo bar baz"
+  }
+}
+```
+
+`acronyms` are spoken letter by letter and are matched case-insensitively.
+`replacements` and `term_pronunciations` are exact term-to-pronunciation maps.
 
 ## Auth Modes
 

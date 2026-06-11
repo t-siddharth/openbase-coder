@@ -533,7 +533,7 @@ def test_voice_selecting_tts_delegates_stream_to_active_voice(monkeypatch):
     assert RecordingCartesiaTTS.created[1].stream_calls == 1
     assert RecordingCartesiaTTS.created[1].prewarmed is True
     assert RecordingCartesiaTTS.created[1].stream_instance.pushed_texts == [
-        "Item: Update read me dot M D. Item: Run U V."
+        "Update read me dot M D. Run U V."
     ]
 
 

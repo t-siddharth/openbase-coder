@@ -4,11 +4,11 @@ import re
 from dataclasses import dataclass
 
 from openbase_coder_cli.livekit_agent.speech_replacements import (
-    ACRONYMS,
     CODE_BLOCK_OMISSION_SPEECH,
     EXTENSION_SPEECH,
     NUMBER_WORDS,
-    TERM_PRONUNCIATIONS,
+    TTSReplacements,
+    current_tts_replacements,
 )
 
 DEFAULT_MAX_CHARS = 1600
@@ -28,10 +28,6 @@ _PATH_RE = re.compile(
 )
 _IDENTIFIER_RE = re.compile(
     r"\b(?:[A-Za-z]+[A-Z][A-Za-z0-9]*|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)+|[A-Z]{2,}(?:_[A-Z0-9]+)+)\b"
-)
-_ACRONYM_RE = re.compile(rf"\b({'|'.join(re.escape(acronym) for acronym in ACRONYMS)})\b", re.IGNORECASE)
-_TERM_PRONUNCIATION_RE = re.compile(
-    rf"\b({'|'.join(re.escape(term) for term in TERM_PRONUNCIATIONS)})\b"
 )
 _README_RE = re.compile(r"\bREADME\b|\breadme\b")
 _UV_RE = re.compile(r"\buv\b")
@@ -318,6 +314,7 @@ def _looks_like_non_speech_output(text: str) -> bool:
 
 
 def _humanize_inline(text: str) -> str:
+    replacements = current_tts_replacements()
     text = _replace_code_omission_narration(text)
     text = _LINK_RE.sub(lambda match: match.group(1) or "", text)
     text = _INLINE_CODE_RE.sub(lambda match: match.group(1), text)
@@ -326,9 +323,12 @@ def _humanize_inline(text: str) -> str:
     text = re.sub(r"(\*\*?|~~)(.+?)\1", r"\2", text)
     text = _README_RE.sub("read me", text)
     text = _UV_RE.sub("U V", text)
-    text = _replace_term_pronunciations(text)
-    text = _IDENTIFIER_RE.sub(lambda match: _split_identifier(match.group(0)), text)
-    text = _ACRONYM_RE.sub(lambda match: _spell_letters(match.group(1)), text)
+    text = _replace_term_pronunciations(text, replacements)
+    text = _IDENTIFIER_RE.sub(
+        lambda match: _split_identifier(match.group(0), replacements),
+        text,
+    )
+    text = _replace_acronyms(text, replacements)
     text = re.sub(r"\b([A-Z]{2,6})\b", lambda match: _spell_letters(match.group(1)), text)
     text = re.sub(r"\(\)", "", text)
     text = text.replace("\\", " backslash ")
@@ -344,17 +344,18 @@ def _replace_code_omission_narration(text: str) -> str:
     return text
 
 
-def _split_identifier(identifier: str) -> str:
+def _split_identifier(identifier: str, replacements: TTSReplacements | None = None) -> str:
+    replacements = replacements or current_tts_replacements()
     if identifier in EXTENSION_SPEECH:
         return EXTENSION_SPEECH[identifier]
-    identifier = _replace_identifier_term_pronunciations(identifier)
+    identifier = _replace_identifier_term_pronunciations(identifier, replacements)
     value = identifier.replace("_", " ").replace("-", " ")
     value = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", value)
     value = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", value)
     value = value.lower()
     value = _README_RE.sub("read me", value)
     value = _UV_RE.sub("U V", value)
-    value = _ACRONYM_RE.sub(lambda match: _spell_letters(match.group(1)), value)
+    value = _replace_acronyms(value, replacements)
     return value
 
 
@@ -393,14 +394,15 @@ def _speak_filename(name: str) -> str:
 
 
 def _humanize_path_part(part: str) -> str:
+    replacements = current_tts_replacements()
     value = _README_RE.sub("read me", part)
     value = _UV_RE.sub("U V", value)
-    value = _replace_identifier_term_pronunciations(value)
+    value = _replace_identifier_term_pronunciations(value, replacements)
     value = value.replace("_", " ").replace("-", " ")
     value = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", value)
     value = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", value)
     value = value.lower()
-    value = _ACRONYM_RE.sub(lambda match: _spell_letters(match.group(1)), value)
+    value = _replace_acronyms(value, replacements)
     return value
 
 
@@ -421,15 +423,47 @@ def _humanize_language(language: str) -> str:
     }.get(normalized, _humanize_inline(language))
 
 
-def _replace_term_pronunciations(text: str) -> str:
-    return _TERM_PRONUNCIATION_RE.sub(lambda match: TERM_PRONUNCIATIONS[match.group(1)], text)
+def _replace_term_pronunciations(
+    text: str,
+    replacements: TTSReplacements,
+) -> str:
+    if not replacements.term_pronunciations:
+        return text
+    pattern = _term_pronunciation_re(replacements)
+    return pattern.sub(
+        lambda match: replacements.term_pronunciations[match.group(1)],
+        text,
+    )
 
 
-def _replace_identifier_term_pronunciations(text: str) -> str:
+def _replace_identifier_term_pronunciations(
+    text: str,
+    replacements: TTSReplacements,
+) -> str:
     value = text
-    for term, pronunciation in TERM_PRONUNCIATIONS.items():
+    for term, pronunciation in replacements.term_pronunciations.items():
         value = value.replace(term, f" {pronunciation} ")
     return value
+
+
+def _replace_acronyms(text: str, replacements: TTSReplacements) -> str:
+    if not replacements.acronyms:
+        return text
+    pattern = _acronym_re(replacements)
+    return pattern.sub(lambda match: _spell_letters(match.group(1)), text)
+
+
+def _acronym_re(replacements: TTSReplacements) -> re.Pattern[str]:
+    return re.compile(
+        rf"\b({'|'.join(re.escape(acronym) for acronym in replacements.acronyms)})\b",
+        re.IGNORECASE,
+    )
+
+
+def _term_pronunciation_re(replacements: TTSReplacements) -> re.Pattern[str]:
+    return re.compile(
+        rf"\b({'|'.join(re.escape(term) for term in replacements.term_pronunciations)})\b"
+    )
 
 
 def _line_count_phrase(line_count: int) -> str:

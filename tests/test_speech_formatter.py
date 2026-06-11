@@ -107,6 +107,34 @@ def test_formatter_keeps_existing_acronyms_spelled_as_letters():
     )
 
 
+def test_formatter_spells_aws_acronym_in_any_case():
+    text = "AWS and aws credentials should both be spoken as letters."
+
+    assert (
+        format_for_speech(text)
+        == "A W S and A W S credentials should both be spoken as letters."
+    )
+
+
+def test_formatter_reloads_user_tts_replacements_without_restart(monkeypatch, tmp_path):
+    replacements_path = tmp_path / "tts-replacements.json"
+    monkeypatch.setenv("OPENBASE_CODER_TTS_REPLACEMENTS_PATH", str(replacements_path))
+
+    assert format_for_speech("Say foobarbaz clearly.") == "Say foobarbaz clearly."
+
+    replacements_path.write_text(
+        '{"replacements": {"foobarbaz": "foo bar baz"}}',
+        encoding="utf-8",
+    )
+    assert format_for_speech("Say foobarbaz clearly.") == "Say foo bar baz clearly."
+
+    replacements_path.write_text(
+        '{"replacements": {"foobarbaz": "F O O bar baz"}}',
+        encoding="utf-8",
+    )
+    assert format_for_speech("Say foobarbaz clearly.") == "Say F O O bar baz clearly."
+
+
 def test_formatter_omits_stack_traces_and_log_like_output():
     text = """Traceback (most recent call last):
   File "app.py", line 2, in <module>
