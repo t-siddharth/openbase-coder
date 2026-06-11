@@ -16,8 +16,14 @@ from openbase_coder_cli.mcp.projects import (
 from openbase_coder_cli.mcp.session_manager import ThreadListPage, get_session_manager
 from openbase_coder_cli.openbase_coder_cli_app.common import _auth_debug_value
 from openbase_coder_cli.openbase_coder_cli_app.thread_cache import (
+    get_cached_thread_list,
     get_cached_thread_page,
     invalidate_thread_list_cache,
+)
+from openbase_coder_cli.openbase_coder_cli_app.thread_favorites import (
+    favorite_payload,
+    is_thread_favorite,
+    set_thread_favorite,
 )
 from openbase_coder_cli.openbase_coder_cli_app.thread_metadata import (
     annotate_thread_payload,
@@ -44,7 +50,28 @@ def _parse_positive_int(
     return parsed, None
 
 
+def _parse_optional_bool(value: Any, *, name: str) -> tuple[bool | None, str | None]:
+    if value is None or value == "":
+        return None, None
+    if isinstance(value, bool):
+        return value, None
+    normalized = str(value).strip().casefold()
+    if normalized in {"1", "true", "yes"}:
+        return True, None
+    if normalized in {"0", "false", "no"}:
+        return False, None
+    return None, f"{name} must be true or false"
+
+
 def _thread_page_url(request, *, page: int, page_size: int) -> str:
+    query = request.query_params.copy()
+    query["page"] = str(page)
+    query["page_size"] = str(page_size)
+    query.pop("cursor", None)
+    return f"{request.path}?{query.urlencode()}"
+
+
+def _offset_thread_page_url(request, *, page: int, page_size: int) -> str:
     query = request.query_params.copy()
     query["page"] = str(page)
     query["page_size"] = str(page_size)
@@ -86,6 +113,71 @@ def _get_thread_page_result(
         if next_cursor is None:
             return ThreadListPage(threads=[], next_cursor=None)
     return get_cached_thread_page(manager, limit=page_size, cursor=next_cursor)
+
+
+def _thread_sort_value(thread):
+    return (
+        thread.current_run.started_at
+        if thread.current_run is not None
+        else thread.updated_at
+    )
+
+
+def _include_livekit_fallback_thread(manager, threads: list) -> list:
+    livekit_thread_id = get_livekit_shared_thread_id()
+    if not livekit_thread_id or any(
+        thread.session_id == livekit_thread_id for thread in threads
+    ):
+        return threads
+    try:
+        livekit_thread = async_to_sync(manager.get_thread_state)(livekit_thread_id)
+    except RuntimeError:
+        logger.warning(
+            "thread_list skipping unavailable LiveKit dispatcher fallback thread_id=%s",
+            livekit_thread_id,
+        )
+        return threads
+    if livekit_thread is None:
+        return threads
+    logger.info(
+        "thread_list adding LiveKit dispatcher fallback thread_id=%s",
+        livekit_thread_id,
+    )
+    return sorted([*threads, livekit_thread], key=_thread_sort_value, reverse=True)
+
+
+def _favorite_thread_list_response(request, manager, *, page: int, page_size: int, favorite: bool):
+    threads = _include_livekit_fallback_thread(manager, get_cached_thread_list(manager))
+    filtered_threads = [
+        thread for thread in threads if is_thread_favorite(thread.session_id) is favorite
+    ]
+    _refresh_projects_from_threads([thread.directory for thread in filtered_threads])
+    count = len(filtered_threads)
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_threads = filtered_threads[start:end]
+    next_url = (
+        _offset_thread_page_url(request, page=page + 1, page_size=page_size)
+        if end < count
+        else None
+    )
+    previous_url = (
+        _offset_thread_page_url(request, page=page - 1, page_size=page_size)
+        if page > 1
+        else None
+    )
+    return Response(
+        {
+            "count": count,
+            "page": page,
+            "page_size": page_size,
+            "next": next_url,
+            "previous": previous_url,
+            "threads": [
+                annotate_thread_payload(t.model_dump(mode="json")) for t in page_threads
+            ],
+        }
+    )
 
 
 @api_view(["GET", "POST"])
@@ -136,9 +228,23 @@ def thread_list(request):
             {"error": page_error or page_size_error},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    favorite_filter, favorite_error = _parse_optional_bool(
+        request.query_params.get("favorite"),
+        name="favorite",
+    )
+    if favorite_error:
+        return Response({"error": favorite_error}, status=status.HTTP_400_BAD_REQUEST)
     assert page is not None
     assert page_size is not None
     page_size = min(page_size, MAX_THREAD_PAGE_SIZE)
+    if favorite_filter is not None:
+        return _favorite_thread_list_response(
+            request,
+            manager,
+            page=page,
+            page_size=page_size,
+            favorite=favorite_filter,
+        )
     cursor = request.query_params.get("cursor") or None
 
     page_result = _get_thread_page_result(
@@ -149,32 +255,7 @@ def thread_list(request):
     )
     threads = page_result.threads
     _refresh_projects_from_threads([thread.directory for thread in threads])
-    livekit_thread_id = get_livekit_shared_thread_id()
-    if livekit_thread_id and all(
-        thread.session_id != livekit_thread_id for thread in threads
-    ):
-        try:
-            livekit_thread = async_to_sync(manager.get_thread_state)(livekit_thread_id)
-        except RuntimeError:
-            logger.warning(
-                "thread_list skipping unavailable LiveKit dispatcher fallback thread_id=%s",
-                livekit_thread_id,
-            )
-            livekit_thread = None
-        if livekit_thread is not None:
-            logger.info(
-                "thread_list adding LiveKit dispatcher fallback thread_id=%s",
-                livekit_thread_id,
-            )
-            threads.append(livekit_thread)
-            threads.sort(
-                key=lambda thread: (
-                    thread.current_run.started_at
-                    if thread.current_run is not None
-                    else thread.updated_at
-                ),
-                reverse=True,
-            )
+    threads = _include_livekit_fallback_thread(manager, threads)
     count = (page - 1) * page_size + len(threads)
     if page_result.next_cursor:
         count += 1
@@ -240,6 +321,26 @@ def thread_detail(request, thread_id):
     return Response(
         annotate_thread_payload(thread.model_dump(mode="json"), thread_id=thread_id)
     )
+
+
+@api_view(["GET", "PATCH"])
+def thread_favorite(request, thread_id):
+    """Read or update a thread's local favorite metadata."""
+    if request.method == "GET":
+        return Response(favorite_payload(thread_id))
+
+    is_favorite = request.data.get("is_favorite")
+    if not isinstance(is_favorite, bool):
+        return Response(
+            {"error": "is_favorite must be a boolean"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        payload = set_thread_favorite(thread_id, is_favorite)
+    except ValueError as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    invalidate_thread_list_cache()
+    return Response(payload)
 
 
 @api_view(["POST"])

@@ -15,6 +15,7 @@ runtime.
 
 - Local API and WebSocket server for coding sessions, diffs, approvals, reports,
   project metadata, and service status
+- Local per-machine thread favorite metadata exposed on thread list/detail APIs
 - Voice-agent runtime built around LiveKit and Codex app-server sessions
 - One-command macOS setup for the Openbase workspace, environment file,
   console build, launchd services, and default agent instructions

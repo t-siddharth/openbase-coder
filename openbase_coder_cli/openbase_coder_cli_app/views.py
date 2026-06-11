@@ -77,6 +77,7 @@ from openbase_coder_cli.openbase_coder_cli_app.services_views import (
 from openbase_coder_cli.openbase_coder_cli_app.skills import _home_skills_dir
 from openbase_coder_cli.openbase_coder_cli_app.threads import (
     thread_detail,
+    thread_favorite,
     thread_interrupt,
     thread_list,
     thread_start_turn,
@@ -226,6 +227,7 @@ __all__ = [
     "skills_list",
     "skills_symlink",
     "thread_detail",
+    "thread_favorite",
     "thread_interrupt",
     "thread_list",
     "thread_start_turn",

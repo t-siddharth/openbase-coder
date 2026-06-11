@@ -51,6 +51,7 @@ from openbase_coder_cli.openbase_coder_cli_app.views import (
     skills_list,
     skills_symlink,
     thread_detail,
+    thread_favorite,
     thread_interrupt,
     thread_list,
     thread_start_turn,
@@ -74,6 +75,11 @@ urlpatterns = [
     path("devices/", devices_list, name="devices-list"),
     path("threads/", thread_list, name="thread-list"),
     path("threads/<str:thread_id>/", thread_detail, name="thread-detail"),
+    path(
+        "threads/<str:thread_id>/favorite/",
+        thread_favorite,
+        name="thread-favorite",
+    ),
     path(
         "threads/<str:thread_id>/interrupt/",
         thread_interrupt,

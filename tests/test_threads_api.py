@@ -43,7 +43,10 @@ class FakeThreadManager:
         )
 
     async def get_thread_state(self, thread_id: str) -> ThreadInfo | None:
-        raise RuntimeError(f"thread not loaded: {thread_id}")
+        return next(
+            (thread for thread in self._threads if thread.session_id == thread_id),
+            None,
+        )
 
 
 def _thread(index: int) -> ThreadInfo:
@@ -159,3 +162,102 @@ def test_thread_list_skips_unavailable_livekit_fallback(monkeypatch) -> None:
     assert [thread["thread_id"] for thread in response.data["threads"]] == [
         "thread-001"
     ]
+
+
+def test_thread_list_filters_favorites_without_changing_default_order(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("OPENBASE_CODER_CLI_DATA_DIR", str(tmp_path))
+    thread_views.set_thread_favorite("thread-002", True)
+    thread_views.set_thread_favorite("thread-004", True)
+    threads = [_thread(index) for index in range(6)]
+
+    default_response, _ = _get_threads(monkeypatch, "/api/threads/", threads)
+    favorite_response, manager = _get_threads(
+        monkeypatch,
+        "/api/threads/?favorite=true&page_size=1",
+        threads,
+    )
+
+    assert [thread["thread_id"] for thread in default_response.data["threads"][:6]] == [
+        f"thread-{index:03d}" for index in range(6)
+    ]
+    assert favorite_response.status_code == 200
+    assert favorite_response.data["count"] == 2
+    assert favorite_response.data["next"] == "/api/threads/?favorite=true&page_size=1&page=2"
+    assert [thread["thread_id"] for thread in favorite_response.data["threads"]] == [
+        "thread-002"
+    ]
+    assert favorite_response.data["threads"][0]["is_favorite"] is True
+    assert manager.page_calls == []
+
+
+def test_thread_list_filters_non_favorites(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OPENBASE_CODER_CLI_DATA_DIR", str(tmp_path))
+    thread_views.set_thread_favorite("thread-001", True)
+
+    response, _ = _get_threads(
+        monkeypatch,
+        "/api/threads/?favorite=false&page_size=10",
+        [_thread(index) for index in range(3)],
+    )
+
+    assert response.status_code == 200
+    assert [thread["thread_id"] for thread in response.data["threads"]] == [
+        "thread-000",
+        "thread-002",
+    ]
+
+
+def test_thread_favorite_endpoint_sets_and_clears_favorite(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENBASE_CODER_CLI_DATA_DIR", str(tmp_path))
+    thread_views.invalidate_thread_list_cache()
+    factory = APIRequestFactory()
+
+    request = factory.patch(
+        "/api/threads/thread-001/favorite/",
+        {"is_favorite": True},
+        format="json",
+    )
+    force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+    response = thread_views.thread_favorite(request, "thread-001")
+
+    assert response.status_code == 200
+    assert response.data["thread_id"] == "thread-001"
+    assert response.data["is_favorite"] is True
+    assert response.data["favorited_at"]
+
+    get_request = factory.get("/api/threads/thread-001/favorite/")
+    force_authenticate(get_request, user=SimpleNamespace(is_authenticated=True))
+    get_response = thread_views.thread_favorite(get_request, "thread-001")
+    assert get_response.data["is_favorite"] is True
+
+    clear_request = factory.patch(
+        "/api/threads/thread-001/favorite/",
+        {"is_favorite": False},
+        format="json",
+    )
+    force_authenticate(clear_request, user=SimpleNamespace(is_authenticated=True))
+    clear_response = thread_views.thread_favorite(clear_request, "thread-001")
+    assert clear_response.data == {
+        "thread_id": "thread-001",
+        "is_favorite": False,
+        "favorited_at": None,
+    }
+
+
+def test_thread_favorite_endpoint_rejects_non_boolean(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENBASE_CODER_CLI_DATA_DIR", str(tmp_path))
+    factory = APIRequestFactory()
+    request = factory.patch(
+        "/api/threads/thread-001/favorite/",
+        {"is_favorite": "true"},
+        format="json",
+    )
+    force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+
+    response = thread_views.thread_favorite(request, "thread-001")
+
+    assert response.status_code == 400
+    assert response.data["error"] == "is_favorite must be a boolean"

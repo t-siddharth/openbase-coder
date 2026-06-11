@@ -125,6 +125,47 @@ def test_annotate_thread_payload_includes_historical_voice(
     assert payload["display_name"] == "Build Agent"
 
 
+def test_annotate_thread_payload_includes_favorite_state(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENBASE_CODER_CLI_DATA_DIR", str(tmp_path))
+    (tmp_path / "thread-favorites.json").write_text(
+        json.dumps(
+            {
+                "threads": {
+                    "thread-1": {
+                        "thread_id": "thread-1",
+                        "favorited_at": "2026-06-10T12:00:00Z",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    favorite = annotate_thread_payload({"thread_id": "thread-1"})
+    ordinary = annotate_thread_payload({"thread_id": "thread-2"})
+
+    assert favorite["is_favorite"] is True
+    assert favorite["favorited_at"] == "2026-06-10T12:00:00Z"
+    assert ordinary["is_favorite"] is False
+    assert ordinary["favorited_at"] is None
+
+
+def test_annotate_thread_payload_recovers_from_malformed_favorites(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENBASE_CODER_CLI_DATA_DIR", str(tmp_path))
+    (tmp_path / "thread-favorites.json").write_text("{", encoding="utf-8")
+
+    payload = annotate_thread_payload({"thread_id": "thread-1"})
+
+    assert payload["is_favorite"] is False
+    assert payload["favorited_at"] is None
+
+
 def test_annotate_thread_payload_does_not_derive_agent_name_from_thread_name(
     tmp_path: Path,
     monkeypatch,
