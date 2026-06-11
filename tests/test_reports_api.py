@@ -36,6 +36,18 @@ def _download_report(project_path: Path, relative_path: str):
     return views.project_reports_download(request)
 
 
+def _set_report_tags(project_path: Path, relative_path: str, tags: list[str]):
+    factory = APIRequestFactory()
+    query = urlencode({"path": str(project_path), "file": relative_path})
+    request = factory.patch(
+        f"/api/projects/reports/tags/?{query}",
+        {"tags": tags},
+        format="json",
+    )
+    force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+    return views.project_reports_tags(request)
+
+
 def _get_global_reports_projects():
     factory = APIRequestFactory()
     request = factory.get("/api/projects/reports/global/")
@@ -189,3 +201,57 @@ def test_project_reports_download_reports_missing_file(tmp_path: Path) -> None:
 
     assert response.status_code == 404
     assert response.data["error"] == "File not found: missing.pdf"
+
+
+def test_project_reports_includes_shared_tags(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("OPENBASE_CODER_CLI_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "project"
+    reports = project / ".reports"
+    reports.mkdir(parents=True)
+    (reports / "summary.md").write_text("# Summary", encoding="utf-8")
+
+    tag_response = _set_report_tags(project, "summary.md", ["Needs Review"])
+    assert tag_response.status_code == 200
+    assert tag_response.data["tags"] == ["Needs Review"]
+
+    factory = APIRequestFactory()
+    request = factory.get(f"/api/projects/reports/?{urlencode({'path': str(project)})}")
+    force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+    response = views.project_reports(request)
+
+    assert response.status_code == 200
+    assert response.data["files"][0]["tags"] == ["Needs Review"]
+
+
+def test_report_tags_endpoint_reuses_thread_tag_options(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("OPENBASE_CODER_CLI_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "project"
+    reports = project / ".reports"
+    reports.mkdir(parents=True)
+    (reports / "summary.md").write_text("# Summary", encoding="utf-8")
+
+    from openbase_coder_cli.openbase_coder_cli_app.item_tags import set_thread_tags
+
+    set_thread_tags("thread-1", ["Client"])
+    response = _set_report_tags(project, "summary.md", ["client"])
+
+    assert response.status_code == 200
+    assert response.data["tags"] == ["Client"]
+    assert [tag["label"] for tag in response.data["tag_options"]] == ["Client"]
+
+
+def test_report_tags_endpoint_rejects_missing_report(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("OPENBASE_CODER_CLI_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "project"
+    (project / ".reports").mkdir(parents=True)
+
+    response = _set_report_tags(project, "missing.md", ["Client"])
+
+    assert response.status_code == 404
+    assert response.data["error"] == "File not found: missing.md"

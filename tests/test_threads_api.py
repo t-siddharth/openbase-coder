@@ -261,3 +261,47 @@ def test_thread_favorite_endpoint_rejects_non_boolean(monkeypatch, tmp_path):
 
     assert response.status_code == 400
     assert response.data["error"] == "is_favorite must be a boolean"
+
+
+def test_thread_tags_endpoint_sets_tags_and_lists_shared_options(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENBASE_CODER_CLI_DATA_DIR", str(tmp_path))
+    thread_views.invalidate_thread_list_cache()
+    factory = APIRequestFactory()
+
+    request = factory.patch(
+        "/api/threads/thread-001/tags/",
+        {"tags": ["Needs Review", "client", "needs review"]},
+        format="json",
+    )
+    force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+    response = thread_views.thread_tags(request, "thread-001")
+
+    assert response.status_code == 200
+    assert response.data["thread_id"] == "thread-001"
+    assert response.data["tags"] == ["Needs Review", "client"]
+    assert [tag["label"] for tag in response.data["tag_options"]] == [
+        "client",
+        "Needs Review",
+    ]
+
+    get_request = factory.get("/api/threads/thread-001/tags/")
+    force_authenticate(get_request, user=SimpleNamespace(is_authenticated=True))
+    get_response = thread_views.thread_tags(get_request, "thread-001")
+
+    assert get_response.data["tags"] == ["Needs Review", "client"]
+
+
+def test_thread_tags_endpoint_rejects_non_list(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENBASE_CODER_CLI_DATA_DIR", str(tmp_path))
+    factory = APIRequestFactory()
+    request = factory.patch(
+        "/api/threads/thread-001/tags/",
+        {"tags": "client"},
+        format="json",
+    )
+    force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+
+    response = thread_views.thread_tags(request, "thread-001")
+
+    assert response.status_code == 400
+    assert response.data["error"] == "tags must be a list"

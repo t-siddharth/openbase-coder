@@ -15,6 +15,10 @@ from openbase_coder_cli.mcp.projects import (
 )
 from openbase_coder_cli.mcp.session_manager import ThreadListPage, get_session_manager
 from openbase_coder_cli.openbase_coder_cli_app.common import _auth_debug_value
+from openbase_coder_cli.openbase_coder_cli_app.item_tags import (
+    set_thread_tags,
+    thread_tags_payload,
+)
 from openbase_coder_cli.openbase_coder_cli_app.thread_cache import (
     get_cached_thread_list,
     get_cached_thread_page,
@@ -337,6 +341,26 @@ def thread_favorite(request, thread_id):
         )
     try:
         payload = set_thread_favorite(thread_id, is_favorite)
+    except ValueError as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    invalidate_thread_list_cache()
+    return Response(payload)
+
+
+@api_view(["GET", "PATCH"])
+def thread_tags(request, thread_id):
+    """Read or update a thread's local tag metadata."""
+    if request.method == "GET":
+        return Response(thread_tags_payload(thread_id))
+
+    tags = request.data.get("tags")
+    if not isinstance(tags, list):
+        return Response(
+            {"error": "tags must be a list"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        payload = set_thread_tags(thread_id, tags)
     except ValueError as exc:
         return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     invalidate_thread_list_cache()

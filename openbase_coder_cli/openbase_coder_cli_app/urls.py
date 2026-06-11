@@ -41,6 +41,7 @@ from openbase_coder_cli.openbase_coder_cli_app.views import (
     project_reports,
     project_reports_download,
     project_reports_file,
+    project_reports_tags,
     project_status,
     recent_projects,
     routine_detail,
@@ -50,11 +51,13 @@ from openbase_coder_cli.openbase_coder_cli_app.views import (
     skill_detail,
     skills_list,
     skills_symlink,
+    tag_options,
     thread_detail,
     thread_favorite,
     thread_interrupt,
     thread_list,
     thread_start_turn,
+    thread_tags,
     user_play,
     user_say,
     uv_tool_detail,
@@ -75,6 +78,11 @@ urlpatterns = [
     path("devices/", devices_list, name="devices-list"),
     path("threads/", thread_list, name="thread-list"),
     path("threads/<str:thread_id>/", thread_detail, name="thread-detail"),
+    path(
+        "threads/<str:thread_id>/tags/",
+        thread_tags,
+        name="thread-tags",
+    ),
     path(
         "threads/<str:thread_id>/favorite/",
         thread_favorite,
@@ -99,6 +107,7 @@ urlpatterns = [
     path("user/play/", user_play, name="user-play"),
     path("projects/recent/", recent_projects, name="recent-projects"),
     path("projects/status/", project_status, name="project-status"),
+    path("tags/", tag_options, name="tag-options"),
     path("projects/reports/", project_reports, name="project-reports"),
     path(
         "projects/reports/global/",
@@ -109,6 +118,11 @@ urlpatterns = [
         "projects/reports/file/",
         project_reports_file,
         name="project-reports-file",
+    ),
+    path(
+        "projects/reports/tags/",
+        project_reports_tags,
+        name="project-reports-tags",
     ),
     path(
         "projects/reports/download/",

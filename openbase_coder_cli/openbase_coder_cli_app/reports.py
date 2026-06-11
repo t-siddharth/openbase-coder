@@ -11,6 +11,11 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
+from openbase_coder_cli.openbase_coder_cli_app.item_tags import (
+    report_tags,
+    report_tags_payload,
+    set_report_tags,
+)
 from openbase_coder_cli.paths import CODEX_HOME_DIR, NORMAL_CODEX_HOME_DIR
 
 REPORTS_DIRECTORY = ".reports"
@@ -36,12 +41,15 @@ def _reports_kind(path: Path) -> str:
 
 def _reports_file_payload(path: Path, reports_dir: Path) -> dict:
     stat = path.stat()
+    relative_path = str(path.relative_to(reports_dir))
+    project_path = str(reports_dir.parent)
     return {
-        "path": str(path.relative_to(reports_dir)),
+        "path": relative_path,
         "name": path.name,
         "kind": _reports_kind(path),
         "size": stat.st_size,
         "updated_at": stat.st_mtime,
+        "tags": report_tags(project_path, relative_path),
     }
 
 
@@ -249,6 +257,50 @@ def project_reports_file(request):
         },
         status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
     )
+
+
+@api_view(["GET", "PATCH"])
+def project_reports_tags(request):
+    """Read or update local tag metadata for one report artifact."""
+    project_path = request.query_params.get("path", "").strip()
+    relative_path = request.query_params.get("file", "").strip()
+    if not project_path:
+        return Response(
+            {"error": "path is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    resolved = Path(project_path).expanduser().resolve()
+    if not resolved.is_dir():
+        return Response(
+            {"error": f"Directory not found: {resolved}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        _resolve_reports_file(str(resolved), relative_path)
+    except FileNotFoundError:
+        return Response(
+            {"error": f"File not found: {relative_path}"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    except ValueError as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    if request.method == "GET":
+        return Response(report_tags_payload(str(resolved), relative_path))
+
+    tags = request.data.get("tags")
+    if not isinstance(tags, list):
+        return Response(
+            {"error": "tags must be a list"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        payload = set_report_tags(str(resolved), relative_path, tags)
+    except ValueError as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(payload)
 
 
 @api_view(["GET"])

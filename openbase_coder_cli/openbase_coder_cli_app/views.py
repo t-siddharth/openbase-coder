@@ -59,6 +59,7 @@ from openbase_coder_cli.openbase_coder_cli_app.reports import (
     project_reports,
     project_reports_download,
     project_reports_file,
+    project_reports_tags,
 )
 from openbase_coder_cli.openbase_coder_cli_app.routines import (
     routine_detail,
@@ -75,12 +76,14 @@ from openbase_coder_cli.openbase_coder_cli_app.services_views import (
     service_status,
 )
 from openbase_coder_cli.openbase_coder_cli_app.skills import _home_skills_dir
+from openbase_coder_cli.openbase_coder_cli_app.tags import tag_options
 from openbase_coder_cli.openbase_coder_cli_app.threads import (
     thread_detail,
     thread_favorite,
     thread_interrupt,
     thread_list,
     thread_start_turn,
+    thread_tags,
 )
 from openbase_coder_cli.paths import (
     CODEX_AGENTS_MD_PATH,
@@ -216,6 +219,7 @@ __all__ = [
     "project_reports",
     "project_reports_download",
     "project_reports_file",
+    "project_reports_tags",
     "project_status",
     "recent_projects",
     "routine_detail",
@@ -226,11 +230,13 @@ __all__ = [
     "skill_detail",
     "skills_list",
     "skills_symlink",
+    "tag_options",
     "thread_detail",
     "thread_favorite",
     "thread_interrupt",
     "thread_list",
     "thread_start_turn",
+    "thread_tags",
     "_build_livekit_client",
     "_resolve_target_room",
     "publish_announcer_audio_file",

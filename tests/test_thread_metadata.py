@@ -153,6 +153,22 @@ def test_annotate_thread_payload_includes_favorite_state(
     assert ordinary["favorited_at"] is None
 
 
+def test_annotate_thread_payload_includes_tags(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENBASE_CODER_CLI_DATA_DIR", str(tmp_path))
+    from openbase_coder_cli.openbase_coder_cli_app.item_tags import set_thread_tags
+
+    set_thread_tags("thread-1", ["Needs Review"])
+
+    tagged = annotate_thread_payload({"thread_id": "thread-1"})
+    ordinary = annotate_thread_payload({"thread_id": "thread-2"})
+
+    assert tagged["tags"] == ["Needs Review"]
+    assert ordinary["tags"] == []
+
+
 def test_annotate_thread_payload_recovers_from_malformed_favorites(
     tmp_path: Path,
     monkeypatch,
