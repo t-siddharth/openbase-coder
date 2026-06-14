@@ -4,7 +4,7 @@ This guide sets up Openbase locally using the `openbase-coder` CLI.
 
 ## Prerequisites
 
-- macOS (`setup` and `services` use launchd) or Linux (systemd user services); screen sharing/computer use is macOS-only
+- macOS (`setup` and `services` use launchd) or Linux (systemd user services). The `computer-use` CLI is Linux-only for Openbase DevSpace Xorg/DCV desktops; macOS agents use native Computer Use tooling.
 - Python 3.13+
 - Git
 - `uv` (recommended)

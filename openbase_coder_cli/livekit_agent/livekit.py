@@ -107,22 +107,18 @@ WEB_BACKEND_URL = os.getenv(
     "OPENBASE_CODER_CLI_WEB_BACKEND_URL",
     DEFAULT_WEB_BACKEND_URL,
 ).rstrip("/")
-OPENBASE_AUDIO_PROXY_ENABLED = os.getenv(
-    "OPENBASE_AUDIO_PROXY_ENABLED",
-    "1",
-).strip().lower() not in {"0", "false", "no"}
-OPENBASE_AUDIO_PROXY_BASE_URL = os.getenv(
-    "OPENBASE_AUDIO_PROXY_BASE_URL",
+OPENBASE_CLOUD_AUDIO_BASE_URL = os.getenv(
+    "OPENBASE_CLOUD_AUDIO_BASE_URL",
     f"{WEB_BACKEND_URL}/api/openbase/audio",
 ).rstrip("/")
-OPENBASE_AUDIO_PROXY_CARTESIA_VERSION = os.getenv(
-    "OPENBASE_AUDIO_PROXY_CARTESIA_VERSION",
+OPENBASE_CLOUD_AUDIO_CARTESIA_VERSION = os.getenv(
+    "OPENBASE_CLOUD_AUDIO_CARTESIA_VERSION",
     "2026-03-01",
 )
 
 
-class AudioProxyAuthenticationError(RuntimeError):
-    """Openbase audio proxy mode requires a valid Openbase access token."""
+class OpenbaseCloudAudioAuthenticationError(RuntimeError):
+    """Openbase Cloud audio requires a valid Openbase access token."""
 
 
 ANNOUNCER_TOPIC = "openbase.announcer.say"
@@ -443,6 +439,15 @@ class CodexLLMStream(llm.LLMStream):
                 self._message_id,
             )
             return
+        if self._voice_router.should_skip_proactively_steered_prompt(prompt):
+            logger.info(
+                "dispatch_timing stage=livekit_llm_prompt_already_steered "
+                "message_id=%s prompt_len=%d prompt_hash=%s",
+                self._message_id,
+                len(prompt),
+                hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12],
+            )
+            return
         logger.info(
             "dispatch_timing stage=livekit_llm_turn_start message_id=%s "
             "prompt_len=%d prompt_hash=%s active_thread_id=%s active_voice_id=%s",
@@ -567,6 +572,7 @@ class Assistant(Agent):
 
 LIVEKIT_AUDIO_FRAME_LOG_FIRST = int(os.getenv("LIVEKIT_AUDIO_FRAME_LOG_FIRST", "10"))
 LIVEKIT_AUDIO_FRAME_LOG_EVERY = int(os.getenv("LIVEKIT_AUDIO_FRAME_LOG_EVERY", "10"))
+PROACTIVE_STEER_PROMPT_CACHE_SECONDS = 120.0
 
 
 def _should_log_audio_frame(frame_count: int) -> bool:
@@ -1919,6 +1925,7 @@ class LiveKitVoiceRouter:
         self._target_clients: dict[str, SuperAgentsLiveKitClient] = {}
         self._active_target_voice_id: str | None = None
         self._active_target_voice_name: str | None = None
+        self._proactive_steer_prompt_hashes: dict[str, float] = {}
 
     @property
     def active_client(self):
@@ -1981,6 +1988,33 @@ class LiveKitVoiceRouter:
 
     def claim_speech(self, client, turn_id: str) -> bool:
         return self._active_client is client and client.claim_speech(turn_id)
+
+    def mark_proactive_steer(self, prompt: str) -> None:
+        self._prune_proactive_steer_prompt_hashes()
+        self._proactive_steer_prompt_hashes[_event_text_hash(prompt.strip())] = (
+            time.monotonic()
+        )
+
+    def should_skip_proactively_steered_prompt(self, prompt: str) -> bool:
+        prompt = prompt.strip()
+        if not prompt:
+            return False
+        has_active_prompt = getattr(self._active_client, "has_active_prompt", None)
+        if callable(has_active_prompt) and has_active_prompt(prompt):
+            return False
+        self._prune_proactive_steer_prompt_hashes()
+        prompt_hash = _event_text_hash(prompt)
+        return self._proactive_steer_prompt_hashes.pop(prompt_hash, None) is not None
+
+    def _prune_proactive_steer_prompt_hashes(self) -> None:
+        cutoff = time.monotonic() - PROACTIVE_STEER_PROMPT_CACHE_SECONDS
+        stale_hashes = [
+            prompt_hash
+            for prompt_hash, created_at in self._proactive_steer_prompt_hashes.items()
+            if created_at < cutoff
+        ]
+        for prompt_hash in stale_hashes:
+            self._proactive_steer_prompt_hashes.pop(prompt_hash, None)
 
     async def close(self) -> None:
         for client in self._target_clients.values():
@@ -2549,8 +2583,56 @@ def _register_room_diagnostics(room: rtc.Room):
     return handlers
 
 
-def _register_session_diagnostics(session: AgentSession):
+def _register_session_diagnostics(
+    session: AgentSession,
+    voice_router: LiveKitVoiceRouter,
+    *,
+    enable_logging: bool,
+):
+    proactive_steer_tasks: set[asyncio.Task[None]] = set()
+
+    async def proactively_steer_final_transcript(transcript: str) -> None:
+        try:
+            steer_active_turn = getattr(
+                voice_router.active_client,
+                "steer_active_turn",
+                None,
+            )
+            if not callable(steer_active_turn):
+                return
+            turn_id = await steer_active_turn(transcript)
+            if not turn_id:
+                return
+            voice_router.mark_proactive_steer(transcript)
+            logger.info(
+                "dispatch_timing stage=session_user_input_proactive_steer "
+                "turn_id=%s transcript_len=%d transcript_hash=%s",
+                turn_id,
+                len(transcript),
+                _event_text_hash(transcript),
+            )
+        except Exception:
+            logger.warning(
+                "dispatch_timing stage=session_user_input_proactive_steer_failed "
+                "transcript_len=%d transcript_hash=%s",
+                len(transcript),
+                _event_text_hash(transcript),
+                exc_info=True,
+            )
+
+    def schedule_proactive_steer(transcript: str) -> None:
+        if _is_exit_to_dispatch_command(transcript):
+            return
+        task = asyncio.create_task(
+            proactively_steer_final_transcript(transcript),
+            name="openbase-proactive-super-agents-steer",
+        )
+        proactive_steer_tasks.add(task)
+        task.add_done_callback(proactive_steer_tasks.discard)
+
     def on_user_state_changed(event) -> None:
+        if not enable_logging:
+            return
         logger.info(
             "dispatch_timing stage=session_user_state_changed old_state=%s new_state=%s",
             getattr(event, "old_state", ""),
@@ -2558,6 +2640,8 @@ def _register_session_diagnostics(session: AgentSession):
         )
 
     def on_agent_state_changed(event) -> None:
+        if not enable_logging:
+            return
         logger.info(
             "dispatch_timing stage=session_agent_state_changed old_state=%s new_state=%s",
             getattr(event, "old_state", ""),
@@ -2566,19 +2650,25 @@ def _register_session_diagnostics(session: AgentSession):
 
     def on_user_input_transcribed(event) -> None:
         transcript = str(getattr(event, "transcript", "") or "")
-        logger.info(
-            "dispatch_timing stage=session_user_input_transcribed final=%s "
-            "speaker_id=%s language=%s transcript_len=%d transcript_hash=%s "
-            "transcript_excerpt=%r",
-            getattr(event, "is_final", ""),
-            getattr(event, "speaker_id", "") or "",
-            getattr(event, "language", "") or "",
-            len(transcript),
-            _event_text_hash(transcript),
-            transcript[:160],
-        )
+        is_final = str(getattr(event, "is_final", "")).lower() == "true"
+        if enable_logging:
+            logger.info(
+                "dispatch_timing stage=session_user_input_transcribed final=%s "
+                "speaker_id=%s language=%s transcript_len=%d transcript_hash=%s "
+                "transcript_excerpt=%r",
+                getattr(event, "is_final", ""),
+                getattr(event, "speaker_id", "") or "",
+                getattr(event, "language", "") or "",
+                len(transcript),
+                _event_text_hash(transcript),
+                transcript[:160],
+            )
+        if is_final and transcript.strip():
+            schedule_proactive_steer(transcript.strip())
 
     def on_conversation_item_added(event) -> None:
+        if not enable_logging:
+            return
         item = getattr(event, "item", None)
         text_content = str(getattr(item, "text_content", "") or "")
         logger.info(
@@ -2592,6 +2682,8 @@ def _register_session_diagnostics(session: AgentSession):
         )
 
     def on_speech_created(event) -> None:
+        if not enable_logging:
+            return
         speech_handle = getattr(event, "speech_handle", None)
         logger.info(
             "dispatch_timing stage=session_speech_created user_initiated=%s "
@@ -2602,6 +2694,8 @@ def _register_session_diagnostics(session: AgentSession):
         )
 
     def on_error(event) -> None:
+        if not enable_logging:
+            return
         error = getattr(event, "error", None)
         logger.warning(
             "dispatch_timing stage=session_error source=%s error_type=%s error=%s",
@@ -2611,6 +2705,8 @@ def _register_session_diagnostics(session: AgentSession):
         )
 
     def on_close(event) -> None:
+        if not enable_logging:
+            return
         logger.info(
             "dispatch_timing stage=session_close reason=%s error_type=%s error=%s",
             getattr(event, "reason", ""),
@@ -2678,8 +2774,8 @@ def _build_stt(vad_model=None):
     if stt_provider == OPENBASE_CLOUD_STT_PROVIDER_ID:
         logger.info("Using Openbase Cloud STT")
         stt = assemblyai.STT(
-            api_key=_openbase_audio_proxy_token(required=True),
-            base_url=_openbase_audio_proxy_ws_base_url("assemblyai"),
+            api_key=_openbase_cloud_audio_token(),
+            base_url=_openbase_cloud_audio_ws_base_url("assemblyai"),
         )
         stt = BrainScoreSTT(stt) if _brain_score_enabled() else stt
         return LoggingSTT(stt) if LIVEKIT_VERBOSE_LOGGING else stt
@@ -2693,38 +2789,32 @@ def _build_stt(vad_model=None):
     raise ValueError(f"Unsupported STT provider={stt_provider!r}")
 
 
-def _openbase_audio_proxy_token(*, required: bool = False) -> str:
-    if not OPENBASE_AUDIO_PROXY_ENABLED:
-        if required:
-            raise AudioProxyAuthenticationError(
-                "Openbase Cloud audio is selected, but OPENBASE_AUDIO_PROXY_ENABLED is disabled."
-            )
-        return ""
+def _openbase_cloud_audio_token() -> str:
     try:
         token = get_token_manager(WEB_BACKEND_URL).get_access_token()
     except (AuthLoginRequiredError, AuthTransientError) as exc:
-        raise AudioProxyAuthenticationError(
-            "Openbase audio proxy is enabled, but Openbase Coder could not get "
+        raise OpenbaseCloudAudioAuthenticationError(
+            "Openbase Cloud audio is selected, but Openbase Coder could not get "
             "a valid Openbase access token. Run `openbase-coder login` and "
-            "restart the Openbase services, or set OPENBASE_AUDIO_PROXY_ENABLED=0 "
-            "to use direct provider API keys."
+            "restart the Openbase services, or choose direct provider keys or "
+            "local audio in voice settings."
         ) from exc
     if not token:
-        raise AudioProxyAuthenticationError(
-            "Openbase audio proxy is enabled, but Openbase Coder received an "
+        raise OpenbaseCloudAudioAuthenticationError(
+            "Openbase Cloud audio is selected, but Openbase Coder received an "
             "empty Openbase access token. Run `openbase-coder login` and restart "
-            "the Openbase services, or set OPENBASE_AUDIO_PROXY_ENABLED=0 to use "
-            "direct provider API keys."
+            "the Openbase services, or choose direct provider keys or local audio "
+            "in voice settings."
         )
     return token
 
 
-def _openbase_audio_proxy_http_base_url(provider: str) -> str:
-    return f"{OPENBASE_AUDIO_PROXY_BASE_URL}/{provider}"
+def _openbase_cloud_audio_http_base_url(provider: str) -> str:
+    return f"{OPENBASE_CLOUD_AUDIO_BASE_URL}/{provider}"
 
 
-def _openbase_audio_proxy_ws_base_url(provider: str) -> str:
-    base_url = _openbase_audio_proxy_http_base_url(provider)
+def _openbase_cloud_audio_ws_base_url(provider: str) -> str:
+    base_url = _openbase_cloud_audio_http_base_url(provider)
     if base_url.startswith("https://"):
         return f"wss://{base_url.removeprefix('https://')}"
     if base_url.startswith("http://"):
@@ -2805,19 +2895,19 @@ async def livekit_agent(ctx: JobContext):
         if tts_provider.provider_id == CARTESIA_PROVIDER_ID
         else None
     ) or tts_provider.default_announcer_voice()
-    cartesia_proxy_token = (
-        _openbase_audio_proxy_token(required=True)
+    openbase_cloud_audio_token = (
+        _openbase_cloud_audio_token()
         if tts_provider.provider_id == OPENBASE_CLOUD_TTS_PROVIDER_ID
         else ""
     )
-    cartesia_api_key = cartesia_proxy_token or CARTESIA_API_KEY
+    cartesia_api_key = openbase_cloud_audio_token or CARTESIA_API_KEY
     cartesia_base_url = (
-        _openbase_audio_proxy_http_base_url("cartesia")
-        if cartesia_proxy_token
+        _openbase_cloud_audio_http_base_url("cartesia")
+        if openbase_cloud_audio_token
         else None
     )
     cartesia_api_version = (
-        OPENBASE_AUDIO_PROXY_CARTESIA_VERSION if cartesia_proxy_token else None
+        OPENBASE_CLOUD_AUDIO_CARTESIA_VERSION if openbase_cloud_audio_token else None
     )
     direct_tts = VoiceSelectingTTS(
         default_voice_id=dispatcher_voice.voice_id,
@@ -2856,8 +2946,10 @@ async def livekit_agent(ctx: JobContext):
         vad=session_vad,
         preemptive_generation=False,
     )
-    session_diagnostic_handlers = (
-        _register_session_diagnostics(session) if LIVEKIT_VERBOSE_LOGGING else ()
+    session_diagnostic_handlers = _register_session_diagnostics(
+        session,
+        voice_router,
+        enable_logging=LIVEKIT_VERBOSE_LOGGING,
     )
 
     # Start the session

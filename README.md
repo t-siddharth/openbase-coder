@@ -26,7 +26,8 @@ runtime.
 ## Requirements
 
 - macOS (launchd) or Linux (systemd user services) for setup and service
-  management; screen sharing and computer use are macOS-only
+  management. The `computer-use` CLI is Linux-only for Openbase DevSpace
+  Xorg/DCV desktops; macOS agents should use native Computer Use tools.
 - Python 3.13+
 - Git
 - `uv` for the recommended install/setup flow and local development

@@ -476,6 +476,74 @@ def test_sync_codex_threads_once_logs_conflict_and_continues(
     assert ledger_payload["threads"]["thread-conflict"]["status"] == "conflict"
 
 
+def test_sync_codex_threads_once_repairs_append_only_prefix_conflict(
+    tmp_path: Path,
+) -> None:
+    normal_home = tmp_path / "normal"
+    voice_home = tmp_path / "voice"
+    ledger = tmp_path / "ledger.json"
+    _create_state_db(normal_home / "state_5.sqlite")
+    _create_state_db(voice_home / "state_5.sqlite")
+    normal_rollout = _insert_thread(
+        normal_home,
+        "thread-1",
+        title="Current title",
+        updated_at=30,
+    )
+    voice_rollout = _insert_thread(
+        voice_home,
+        "thread-1",
+        title="Stale title",
+        updated_at=20,
+    )
+    _append_terminal(normal_rollout, message="first")
+    voice_rollout.write_text(normal_rollout.read_text(encoding="utf-8"), encoding="utf-8")
+    _append_terminal(normal_rollout, message="second")
+    ledger.write_text(
+        json.dumps(
+            {
+                "threads": {
+                    "thread-1": {
+                        "thread_id": "thread-1",
+                        "status": "conflict",
+                        "reason": "conflict_unresolved",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    results = sync_codex_threads_once(
+        normal_home=normal_home,
+        voice_home=voice_home,
+        ledger_path=ledger,
+        stability_delay_seconds=0,
+        max_age_days=None,
+    )
+
+    assert [
+        (result.thread_id, result.status, result.direction, result.reason)
+        for result in results
+    ] == [
+        (
+            "thread-1",
+            "transferred",
+            "normal_to_voice",
+            "synced_append_only_to_voice",
+        )
+    ]
+    assert voice_rollout.read_text(encoding="utf-8") == normal_rollout.read_text(
+        encoding="utf-8"
+    )
+    with sqlite3.connect(voice_home / "state_5.sqlite") as conn:
+        assert conn.execute(
+            "SELECT title FROM threads WHERE id = ?", ("thread-1",)
+        ).fetchone() == ("Current title",)
+    ledger_payload = json.loads(ledger.read_text(encoding="utf-8"))
+    assert ledger_payload["threads"]["thread-1"]["status"] == "synced"
+
+
 def test_sync_codex_threads_once_marks_same_content_duplicate_synced(
     tmp_path: Path,
 ) -> None:

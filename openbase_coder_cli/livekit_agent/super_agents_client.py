@@ -120,6 +120,7 @@ class SuperAgentsLiveKitClient:
         self._active_turn_id: str | None = None
         self._active_turn_started_at: float | None = None
         self._active_turn_dispatch_id: str | None = None
+        self._active_turn_prompt_hash: str | None = None
         self._claimed_speech_turns: set[str] = set()
         self._state_lock = asyncio.Lock()
         self._turn_start_lock = asyncio.Lock()
@@ -170,11 +171,24 @@ class SuperAgentsLiveKitClient:
             )
 
             if self._active_turn_id:
-                turn_id = await self._steer_turn(thread_id, prompt)
+                if self._active_turn_prompt_hash == prompt_debug["hash"]:
+                    turn_id = self._active_turn_id
+                    logger.info(
+                        "%s stage=voice_request_joined_active_turn dispatch_id=%s "
+                        "thread_id=%s turn_id=%s prompt_hash=%s",
+                        DISPATCH_TIMING_LOG,
+                        dispatch_id,
+                        thread_id,
+                        turn_id,
+                        prompt_debug["hash"],
+                    )
+                else:
+                    turn_id = await self._steer_turn(thread_id, prompt)
             else:
                 active_turn_id = await self._resolve_active_turn_id(thread_id)
                 if active_turn_id:
                     self._active_turn_id = active_turn_id
+                    self._active_turn_prompt_hash = None
                     turn_id = await self._steer_turn(thread_id, prompt)
                 else:
                     start_task = asyncio.create_task(
@@ -192,6 +206,7 @@ class SuperAgentsLiveKitClient:
                         self._active_turn_id = turn_id
                         self._active_turn_started_at = time.monotonic()
                         self._active_turn_dispatch_id = dispatch_id
+                        self._active_turn_prompt_hash = prompt_debug["hash"]
                         preserve_active_turn = True
                         logger.info(
                             "%s stage=turn_start_cancelled_after_backend_start "
@@ -206,6 +221,7 @@ class SuperAgentsLiveKitClient:
             self._active_turn_id = turn_id
             self._active_turn_started_at = time.monotonic()
             self._active_turn_dispatch_id = dispatch_id
+            self._active_turn_prompt_hash = prompt_debug["hash"]
 
         logger.info(
             "%s stage=turn_wait_start dispatch_id=%s thread_id=%s turn_id=%s "
@@ -254,6 +270,59 @@ class SuperAgentsLiveKitClient:
                 self._active_turn_id = None
                 self._active_turn_started_at = None
                 self._active_turn_dispatch_id = None
+                self._active_turn_prompt_hash = None
+
+    def has_active_prompt(self, prompt: str) -> bool:
+        prompt_debug = _prompt_debug_fields(prompt)
+        return (
+            bool(self._active_turn_id)
+            and self._active_turn_prompt_hash == prompt_debug["hash"]
+        )
+
+    async def steer_active_turn(self, prompt: str) -> str | None:
+        prompt = prompt.strip()
+        if not prompt:
+            return None
+
+        prompt_debug = _prompt_debug_fields(prompt)
+        async with self._turn_start_lock:
+            thread_id = await self._ensure_thread()
+            if self._active_turn_id:
+                if self._active_turn_prompt_hash == prompt_debug["hash"]:
+                    logger.info(
+                        "%s stage=proactive_steer_joined_active_turn thread_id=%s "
+                        "turn_id=%s prompt_hash=%s",
+                        DISPATCH_TIMING_LOG,
+                        thread_id,
+                        self._active_turn_id,
+                        prompt_debug["hash"],
+                    )
+                    return None
+                return await self._steer_turn(
+                    thread_id,
+                    prompt,
+                    start_when_inactive=False,
+                )
+
+            active_turn_id = await self._resolve_active_turn_id(thread_id)
+            if not active_turn_id:
+                logger.info(
+                    "%s stage=proactive_steer_no_active_turn thread_id=%s "
+                    "prompt_hash=%s prompt_len=%s",
+                    DISPATCH_TIMING_LOG,
+                    thread_id,
+                    prompt_debug["hash"],
+                    prompt_debug["length"],
+                )
+                return None
+
+            self._active_turn_id = active_turn_id
+            self._active_turn_prompt_hash = None
+            return await self._steer_turn(
+                thread_id,
+                prompt,
+                start_when_inactive=False,
+            )
 
     async def _start_turn(
         self,
@@ -469,7 +538,13 @@ class SuperAgentsLiveKitClient:
             )
             await asyncio.sleep(TURN_POLL_INTERVAL_SECONDS)
 
-    async def _steer_turn(self, thread_id: str, prompt: str) -> str:
+    async def _steer_turn(
+        self,
+        thread_id: str,
+        prompt: str,
+        *,
+        start_when_inactive: bool = True,
+    ) -> str | None:
         assert self._active_turn_id is not None
         prompt_debug = _prompt_debug_fields(prompt)
         try:
@@ -499,6 +574,8 @@ class SuperAgentsLiveKitClient:
                     self._active_turn_id,
                     prompt_debug["hash"],
                 )
+                if not start_when_inactive:
+                    return None
                 return self._active_turn_id
             elif _is_no_active_turn_error(exc):
                 logger.info(
@@ -507,15 +584,24 @@ class SuperAgentsLiveKitClient:
                     prompt_debug["hash"],
                 )
                 self._active_turn_id = None
-                return await self._start_turn(
+                self._active_turn_prompt_hash = None
+                if not start_when_inactive:
+                    return None
+                turn_id = await self._start_turn(
                     thread_id,
                     prompt,
                     developer_instructions=None,
                     dispatch_id=f"voice-{uuid.uuid4().hex[:12]}",
                 )
+                self._active_turn_id = turn_id
+                self._active_turn_started_at = time.monotonic()
+                self._active_turn_prompt_hash = prompt_debug["hash"]
+                return turn_id
             else:
                 raise
         turn_id = _extract_turn_id(result) or self._active_turn_id
+        self._active_turn_id = turn_id
+        self._active_turn_prompt_hash = prompt_debug["hash"]
         logger.info(
             "Submitted Super Agents turn steering turn_id=%s prompt_hash=%s prompt_len=%s",
             turn_id,
@@ -856,6 +942,10 @@ def _extract_turn_id(payload: dict[str, Any]) -> str | None:
 def _response_is_queued(payload: dict[str, Any]) -> bool:
     if payload.get("queued") is True:
         return True
+    for key in ("turnId", "turn_id", "id"):
+        value = payload.get(key)
+        if isinstance(value, str) and _is_queue_item_id(value):
+            return True
     item = payload.get("item")
     if not isinstance(item, dict):
         return False
@@ -867,6 +957,10 @@ def _response_is_queued(payload: dict[str, Any]) -> bool:
 
 
 def _extract_queued_id(payload: dict[str, Any]) -> str | None:
+    for key in ("turnId", "turn_id", "id"):
+        value = payload.get(key)
+        if isinstance(value, str) and _is_queue_item_id(value):
+            return value
     item = payload.get("item")
     if not isinstance(item, dict):
         return None

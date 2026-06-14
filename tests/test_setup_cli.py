@@ -362,8 +362,12 @@ def test_ensure_codex_home_dispatcher_config_creates_default(
                 "super_agents": "gpt-5.5",
             },
         },
+        "dispatcher_voice_id": "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",
+        "dispatcher_voice_name": "Jacqueline",
         "dispatcher_reasoning_effort": "low",
+        "stt_provider": "openbase_cloud",
         "super_agents_reasoning_effort": "high",
+        "tts_provider": "openbase_cloud",
     }
     assert legacy_path.is_symlink()
     assert legacy_path.resolve() == config_path.resolve()
@@ -390,6 +394,36 @@ def test_ensure_codex_home_dispatcher_config_preserves_existing(
     assert json.loads(config_path.read_text(encoding="utf-8")) == {
         "dispatcher_reasoning_effort": "medium",
         "super_agents_reasoning_effort": "xhigh",
+    }
+    assert legacy_path.is_symlink()
+    assert legacy_path.resolve() == config_path.resolve()
+
+
+def test_ensure_codex_home_dispatcher_config_updates_audio_provider_when_requested(
+    tmp_path, monkeypatch
+) -> None:
+    config_path = tmp_path / "dispatcher-config.json"
+    legacy_path = tmp_path / "codex_home" / "dispatcher-config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "{\n"
+        '  "dispatcher_reasoning_effort": "medium",\n'
+        '  "super_agents_reasoning_effort": "xhigh"\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(setup_cli, "CODEX_DISPATCHER_CONFIG_PATH", config_path)
+    monkeypatch.setattr(setup_cli, "LEGACY_CODEX_DISPATCHER_CONFIG_PATH", legacy_path)
+
+    setup_cli._ensure_codex_home_dispatcher_config(audio_provider="local")
+
+    assert json.loads(config_path.read_text(encoding="utf-8")) == {
+        "dispatcher_reasoning_effort": "medium",
+        "dispatcher_voice_id": "af_heart",
+        "dispatcher_voice_name": "Heart",
+        "stt_provider": "local_mlx_whisper",
+        "super_agents_reasoning_effort": "xhigh",
+        "tts_provider": "kokoro",
     }
     assert legacy_path.is_symlink()
     assert legacy_path.resolve() == config_path.resolve()
@@ -803,7 +837,10 @@ def test_setup_configures_tailscale_serve(tmp_path, monkeypatch) -> None:
         "_ensure_codex_home_default_files",
         lambda _workspace_dir: None,
     )
-    monkeypatch.setattr(setup_cli, "_ensure_codex_home_dispatcher_config", lambda: None)
+    monkeypatch.setattr(
+        setup_cli, "_ensure_codex_home_dispatcher_config", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(setup_cli, "_download_local_audio_models", lambda: None)
     monkeypatch.setattr(
         setup_cli, "_symlink_codex_home_skills", lambda _workspace_dir: None
     )

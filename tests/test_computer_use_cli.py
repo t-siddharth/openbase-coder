@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 
 import httpx
+import pytest
 from click.testing import CliRunner
 
 computer_use_cli = importlib.import_module("openbase_coder_cli.cli.computer_use")
@@ -58,6 +59,11 @@ class FakeCompanionClient:
     def interrupt_computer_use(self) -> dict:
         self.calls.append(("interrupt_computer_use", None))
         return {"ok": True, "state": "off"}
+
+
+@pytest.fixture(autouse=True)
+def linux_platform(monkeypatch):
+    monkeypatch.setattr(computer_use_cli.platform, "system", lambda: "Linux")
 
 
 def patch_local_server_request(monkeypatch, fake_request) -> None:
@@ -201,3 +207,13 @@ def test_interrupt_calls_companion(monkeypatch):
 
     assert result.exit_code == 0
     assert FakeCompanionClient.instances[0].calls == [("interrupt_computer_use", None)]
+
+
+def test_computer_use_refuses_macos(monkeypatch):
+    monkeypatch.setattr(computer_use_cli.platform, "system", lambda: "Darwin")
+
+    result = CliRunner().invoke(computer_use_cli.computer_use, ["status"])
+
+    assert result.exit_code != 0
+    assert "Linux-only" in result.output
+    assert "native Computer Use" in result.output

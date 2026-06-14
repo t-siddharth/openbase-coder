@@ -674,6 +674,75 @@ def test_livekit_companion_session_api_handles_missing_room(monkeypatch):
     assert response.data == {"detail": "No active LiveKit voice room was found."}
 
 
+def test_livekit_companion_start_api_starts_linux_screen_share(monkeypatch):
+    class FakeCompanionClient:
+        def __init__(self):
+            self.calls = []
+
+        def ensure_running(self):
+            self.calls.append(("ensure_running", None))
+
+        def start_screen_share(self, session):
+            self.calls.append(("start_screen_share", session))
+            return {"ok": True, "state": "sharing"}
+
+    client = FakeCompanionClient()
+
+    monkeypatch.setenv("LIVEKIT_API_KEY", "devkey")
+    monkeypatch.setenv("LIVEKIT_API_SECRET", "devsecret")
+    monkeypatch.setenv("LIVEKIT_CLIENT_API_KEY", "clientkey")
+    monkeypatch.setenv("LIVEKIT_CLIENT_API_SECRET", "clientsecret")
+    monkeypatch.setenv("LIVEKIT_URL", "ws://livekit.local")
+    monkeypatch.setattr(views._livekit.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(views._livekit, "_companion_client_factory", lambda: client)
+
+    request = APIRequestFactory().post(
+        "/api/livekit-companion-start/",
+        {"room_name": "room-1"},
+        format="json",
+    )
+    force_authenticate(
+        request,
+        user=SimpleNamespace(is_authenticated=True),
+        token={"email": "gabe@example.com"},
+    )
+
+    response = views.livekit_companion_start(request)
+
+    assert response.status_code == 200
+    assert response.data["supported"] is True
+    assert response.data["started"] is True
+    assert response.data["roomName"] == "room-1"
+    assert response.data["companion"] == {"ok": True, "state": "sharing"}
+    assert [name for name, _ in client.calls] == [
+        "ensure_running",
+        "start_screen_share",
+    ]
+    assert client.calls[1][1]["roomUrl"] == "ws://livekit.local"
+    assert client.calls[1][1]["token"]
+
+
+def test_livekit_companion_start_api_is_noop_on_non_linux(monkeypatch):
+    monkeypatch.setattr(views._livekit.platform, "system", lambda: "Darwin")
+
+    request = APIRequestFactory().post(
+        "/api/livekit-companion-start/",
+        {"room_name": "room-1"},
+        format="json",
+    )
+    force_authenticate(
+        request,
+        user=SimpleNamespace(is_authenticated=True),
+        token={"email": "gabe@example.com"},
+    )
+
+    response = views.livekit_companion_start(request)
+
+    assert response.status_code == 200
+    assert response.data["supported"] is False
+    assert response.data["started"] is False
+
+
 def test_user_say_api_rejects_blank_text():
     request = APIRequestFactory().post(
         "/api/user/say/",

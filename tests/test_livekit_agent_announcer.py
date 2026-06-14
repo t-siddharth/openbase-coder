@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import wave
+from types import SimpleNamespace
 
 import pytest
 from livekit import rtc
@@ -84,58 +86,37 @@ def test_parse_announcer_audio_packet_reads_path():
     assert parse_announcer_packet(packet) is None
 
 
-def test_openbase_audio_proxy_token_fails_closed_when_login_missing(monkeypatch):
+def test_openbase_cloud_audio_token_fails_closed_when_login_missing(monkeypatch):
     class MissingLoginManager:
         def get_access_token(self):
             raise livekit.AuthLoginRequiredError("login required")
 
-    monkeypatch.setattr(livekit, "OPENBASE_AUDIO_PROXY_ENABLED", True)
     monkeypatch.setattr(livekit, "WEB_BACKEND_URL", "https://app.openbase.cloud")
     monkeypatch.setattr(
         livekit, "get_token_manager", lambda _url: MissingLoginManager()
     )
 
-    with pytest.raises(livekit.AudioProxyAuthenticationError) as exc_info:
-        livekit._openbase_audio_proxy_token()
+    with pytest.raises(livekit.OpenbaseCloudAudioAuthenticationError) as exc_info:
+        livekit._openbase_cloud_audio_token()
 
     message = str(exc_info.value)
-    assert "Openbase audio proxy is enabled" in message
+    assert "Openbase Cloud audio is selected" in message
     assert "openbase-coder login" in message
-    assert "OPENBASE_AUDIO_PROXY_ENABLED=0" in message
+    assert "direct provider keys or local audio" in message
 
 
-def test_openbase_audio_proxy_token_fails_closed_on_empty_token(monkeypatch):
+def test_openbase_cloud_audio_token_fails_closed_on_empty_token(monkeypatch):
     class EmptyTokenManager:
         def get_access_token(self):
             return ""
 
-    monkeypatch.setattr(livekit, "OPENBASE_AUDIO_PROXY_ENABLED", True)
     monkeypatch.setattr(livekit, "WEB_BACKEND_URL", "https://app.openbase.cloud")
     monkeypatch.setattr(livekit, "get_token_manager", lambda _url: EmptyTokenManager())
 
-    with pytest.raises(livekit.AudioProxyAuthenticationError) as exc_info:
-        livekit._openbase_audio_proxy_token()
+    with pytest.raises(livekit.OpenbaseCloudAudioAuthenticationError) as exc_info:
+        livekit._openbase_cloud_audio_token()
 
     assert "empty Openbase access token" in str(exc_info.value)
-
-
-def test_openbase_audio_proxy_token_allows_direct_fallback_when_disabled(monkeypatch):
-    def fail_get_token_manager(_url):
-        raise AssertionError("token manager should not be used when proxy is disabled")
-
-    monkeypatch.setattr(livekit, "OPENBASE_AUDIO_PROXY_ENABLED", False)
-    monkeypatch.setattr(livekit, "get_token_manager", fail_get_token_manager)
-
-    assert livekit._openbase_audio_proxy_token() == ""
-
-
-def test_openbase_audio_proxy_token_required_fails_when_disabled(monkeypatch):
-    monkeypatch.setattr(livekit, "OPENBASE_AUDIO_PROXY_ENABLED", False)
-
-    with pytest.raises(livekit.AudioProxyAuthenticationError) as exc_info:
-        livekit._openbase_audio_proxy_token(required=True)
-
-    assert "Openbase Cloud audio is selected" in str(exc_info.value)
 
 
 def test_livekit_agent_capacity_uses_livekit_defaults_for_remote_models(monkeypatch):
@@ -858,6 +839,50 @@ class PreparedClient(CodexAppServerClient):
 
     def persist_voice_route(self, **kwargs) -> None:
         self.persisted_routes.append(kwargs)
+
+
+@pytest.mark.asyncio
+async def test_session_final_transcript_proactively_steers_when_logging_disabled():
+    class FakeSession:
+        def __init__(self):
+            self.handlers = {}
+
+        def on(self, event_name, handler):
+            self.handlers[event_name] = handler
+
+    class FakeClient:
+        def __init__(self):
+            self.steered_prompts = []
+
+        async def steer_active_turn(self, prompt):
+            self.steered_prompts.append(prompt)
+            return "turn-1"
+
+        def has_active_prompt(self, prompt):
+            return False
+
+        def claim_speech(self, turn_id):
+            return True
+
+    session = FakeSession()
+    client = FakeClient()
+    router = LiveKitVoiceRouter(client)
+    livekit._register_session_diagnostics(
+        session,
+        router,
+        enable_logging=False,
+    )
+
+    session.handlers["user_input_transcribed"](
+        SimpleNamespace(is_final=True, transcript=" stop now ")
+    )
+
+    for _ in range(20):
+        if client.steered_prompts:
+            break
+        await asyncio.sleep(0.01)
+    assert client.steered_prompts == ["stop now"]
+    assert router.should_skip_proactively_steered_prompt("stop now") is True
 
 
 @pytest.mark.asyncio

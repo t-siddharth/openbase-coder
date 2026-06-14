@@ -211,6 +211,12 @@ def livekit_companion_session(request):
 
 
 @csrf_exempt
+def livekit_companion_start(request):
+    _sync_livekit_compat_globals()
+    return _livekit.livekit_companion_start(request)
+
+
+@csrf_exempt
 def skills_list(request):
     _sync_skills_compat_globals()
     return _skills.skills_list(request)

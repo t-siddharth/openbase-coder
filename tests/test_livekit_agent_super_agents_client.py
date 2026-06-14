@@ -11,6 +11,7 @@ import pytest
 from openbase_coder_cli.livekit_agent.super_agents_client import (
     SuperAgentsLiveKitClient,
     _extract_turn_id,
+    _response_is_queued,
     _speech_text_from_progress,
 )
 
@@ -225,6 +226,49 @@ class FakeSlowStartSuperAgentsBackend(FakeSuperAgentsBackend):
         }
 
 
+class FakeLongRunningSuperAgentsBackend(FakeSuperAgentsBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.progress_called = asyncio.Event()
+        self.release_progress = asyncio.Event()
+        self.steered: list[tuple[Any, str]] = []
+
+    async def start_turn_by_label(
+        self,
+        input_data,
+        turn_input: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.started_turns.append((input_data, turn_input))
+        return {"turnId": "turn-1"}
+
+    async def steer_by_label(self, input_data, prompt: str) -> dict[str, Any]:
+        self.steered.append((input_data, prompt))
+        return {"turnId": input_data.turn_id, "prompt": prompt}
+
+    async def progress_by_label(self, input_data) -> dict[str, Any]:
+        self.progress_calls += 1
+        if not self.started_turns:
+            return {
+                "status": "completed",
+                "threadId": input_data.thread_id,
+            }
+        self.progress_called.set()
+        await self.release_progress.wait()
+        return {
+            "status": "waiting",
+            "threadId": input_data.thread_id,
+            "turnId": input_data.turn_id,
+            "summary": {
+                "items": [
+                    {
+                        "type": "agentMessage",
+                        "text": "The proactively steered turn is ready.",
+                    }
+                ]
+            },
+        }
+
+
 class FakeStaleActiveSuperAgentsBackend(FakeSuperAgentsBackend):
     def __init__(self) -> None:
         super().__init__()
@@ -408,6 +452,62 @@ async def test_super_agents_livekit_client_preserves_started_turn_after_cancella
 
 
 @pytest.mark.asyncio
+async def test_super_agents_livekit_client_proactively_steers_active_turn(
+    tmp_path: Path,
+) -> None:
+    backend = FakeLongRunningSuperAgentsBackend()
+    state_path = tmp_path / "livekit-voice-route.json"
+    client = SuperAgentsLiveKitClient(
+        cwd="/tmp/project",
+        state_path=str(state_path),
+        backend_client=backend,
+    )
+
+    first = asyncio.create_task(client.run_turn("write about strawberries"))
+    await backend.progress_called.wait()
+
+    turn_id = await client.steer_active_turn("stop and write about blueberries")
+    follow_up = asyncio.create_task(
+        client.run_turn("stop and write about blueberries")
+    )
+    await asyncio.sleep(0)
+
+    assert turn_id == "turn-1"
+    assert len(backend.started_turns) == 1
+    assert len(backend.steered) == 1
+    steer_input, prompt = backend.steered[0]
+    assert steer_input.turn_id == "turn-1"
+    assert prompt == "stop and write about blueberries"
+
+    backend.release_progress.set()
+    first_result = await first
+    follow_up_result = await follow_up
+
+    assert len(backend.started_turns) == 1
+    assert len(backend.steered) == 1
+    assert first_result["_livekit_turn_id"] == "turn-1"
+    assert follow_up_result["_livekit_turn_id"] == "turn-1"
+
+
+@pytest.mark.asyncio
+async def test_super_agents_livekit_client_proactive_steer_does_not_start_turn(
+    tmp_path: Path,
+) -> None:
+    backend = FakeSuperAgentsBackend()
+    state_path = tmp_path / "livekit-voice-route.json"
+    client = SuperAgentsLiveKitClient(
+        cwd="/tmp/project",
+        state_path=str(state_path),
+        backend_client=backend,
+    )
+
+    turn_id = await client.steer_active_turn("hello")
+
+    assert turn_id is None
+    assert backend.started_turns == []
+
+
+@pytest.mark.asyncio
 async def test_super_agents_livekit_client_does_not_steer_stale_active_turn(
     tmp_path: Path,
 ) -> None:
@@ -526,6 +626,13 @@ def test_extract_turn_id_ignores_queued_item_id() -> None:
         },
     }
 
+    assert _extract_turn_id(payload) is None
+
+
+def test_top_level_queue_item_id_is_queued_response() -> None:
+    payload = {"turnId": "q_queued-follow-up", "status": "queued"}
+
+    assert _response_is_queued(payload) is True
     assert _extract_turn_id(payload) is None
 
 

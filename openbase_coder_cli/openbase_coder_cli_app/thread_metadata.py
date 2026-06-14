@@ -18,7 +18,6 @@ from openbase_coder_cli.livekit_voice_route import (
 from openbase_coder_cli.openbase_coder_cli_app.item_tags import thread_tags
 from openbase_coder_cli.openbase_coder_cli_app.thread_favorites import favorite_payload
 from openbase_coder_cli.tts_providers import voice_name_for_id
-from super_agents.state import read_state_file_locked
 
 VoiceRouteRole = Literal["none", "dispatcher", "active_target"]
 SUPER_AGENTS_STATE_FILE_ENV = "SUPER_AGENTS_STATE_FILE"

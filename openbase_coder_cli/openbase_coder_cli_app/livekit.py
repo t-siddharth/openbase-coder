@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -794,14 +795,56 @@ async def _resolve_companion_target_room(room_name: str | None):
         await client.aclose()
 
 
+def _build_companion_session_payload(
+    *,
+    room_name: str | None,
+    require_active_target: bool,
+) -> dict[str, str]:
+    api_key, api_secret = _livekit_client_token_credentials()
+
+    target_room_name = room_name
+    if require_active_target or not target_room_name:
+        target = async_to_sync(_resolve_companion_target_room)(room_name)
+        target_room_name = target.room_name
+
+    expires_at = timezone.now() + LIVEKIT_COMPANION_TOKEN_TTL
+    token = (
+        livekit_api.AccessToken(api_key=api_key, api_secret=api_secret)
+        .with_identity(LIVEKIT_COMPANION_IDENTITY)
+        .with_name(LIVEKIT_COMPANION_NAME)
+        .with_grants(
+            livekit_api.VideoGrants(
+                room_join=True,
+                room=target_room_name,
+                can_publish=True,
+                can_subscribe=False,
+                can_publish_data=True,
+            )
+        )
+        .with_ttl(LIVEKIT_COMPANION_TOKEN_TTL)
+        .to_jwt()
+    )
+
+    return {
+        "roomUrl": os.environ.get("LIVEKIT_URL", "ws://localhost:7880"),
+        "roomName": target_room_name,
+        "companionToken": token,
+        "companionTokenExpiresAt": expires_at.isoformat(),
+    }
+
+
+def _companion_client_factory():
+    from openbase_coder_cli.cli.computer_use import CompanionClient
+
+    return CompanionClient()
+
+
 @api_view(["GET", "POST"])
 def livekit_companion_session(request):
     """Mint a screen-share companion token for the current LiveKit voice room."""
     input_data = request.query_params if request.method == "GET" else request.data
     input_serializer = LiveKitCompanionSessionSerializer(data=input_data)
     input_serializer.is_valid(raise_exception=True)
-
-    api_key, api_secret = _livekit_client_token_credentials()
 
     if not isinstance(request.auth, dict):
         raise serializers.ValidationError(
@@ -810,7 +853,12 @@ def livekit_companion_session(request):
 
     room_name = input_serializer.validated_data.get("room_name") or None
     try:
-        target = async_to_sync(_resolve_companion_target_room)(room_name)
+        payload = _build_companion_session_payload(
+            room_name=room_name,
+            require_active_target=True,
+        )
+    except serializers.ValidationError:
+        raise
     except AnnouncerValidationError as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     except NoActiveLiveKitRoomError as exc:
@@ -822,29 +870,64 @@ def livekit_companion_session(request):
             status=status.HTTP_502_BAD_GATEWAY,
         )
 
-    expires_at = timezone.now() + LIVEKIT_COMPANION_TOKEN_TTL
-    token = (
-        livekit_api.AccessToken(api_key=api_key, api_secret=api_secret)
-        .with_identity(LIVEKIT_COMPANION_IDENTITY)
-        .with_name(LIVEKIT_COMPANION_NAME)
-        .with_grants(
-            livekit_api.VideoGrants(
-                room_join=True,
-                room=target.room_name,
-                can_publish=True,
-                can_subscribe=False,
-                can_publish_data=True,
-            )
+    return Response(payload)
+
+
+@api_view(["POST"])
+def livekit_companion_start(request):
+    """Start the Linux screen-share companion for the current LiveKit room."""
+    input_serializer = LiveKitCompanionSessionSerializer(data=request.data)
+    input_serializer.is_valid(raise_exception=True)
+
+    if not isinstance(request.auth, dict):
+        raise serializers.ValidationError(
+            {"detail": "A JWT-authenticated caller is required to share the screen."}
         )
-        .with_ttl(LIVEKIT_COMPANION_TOKEN_TTL)
-        .to_jwt()
-    )
+
+    if platform.system() != "Linux":
+        return Response(
+            {
+                "supported": False,
+                "started": False,
+                "detail": "The Linux screen-share companion is only available on Linux.",
+            }
+        )
+
+    room_name = input_serializer.validated_data.get("room_name") or None
+    try:
+        payload = _build_companion_session_payload(
+            room_name=room_name,
+            require_active_target=not bool(room_name),
+        )
+        client = _companion_client_factory()
+        client.ensure_running()
+        companion_response = client.start_screen_share(
+            {
+                "roomUrl": payload["roomUrl"],
+                "token": payload["companionToken"],
+                "identity": LIVEKIT_COMPANION_IDENTITY,
+                "name": LIVEKIT_COMPANION_NAME,
+                "companionTokenExpiresAt": payload["companionTokenExpiresAt"],
+            }
+        )
+    except serializers.ValidationError:
+        raise
+    except AnnouncerValidationError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except NoActiveLiveKitRoomError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as exc:
+        logger.exception("Unable to start LiveKit companion")
+        return Response(
+            {"detail": f"Unable to start the Linux screen-share companion: {exc}"},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
 
     return Response(
         {
-            "roomUrl": os.environ.get("LIVEKIT_URL", "ws://localhost:7880"),
-            "roomName": target.room_name,
-            "companionToken": token,
-            "companionTokenExpiresAt": expires_at.isoformat(),
+            "supported": True,
+            "started": True,
+            "roomName": payload["roomName"],
+            "companion": companion_response,
         }
     )

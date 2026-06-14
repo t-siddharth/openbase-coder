@@ -421,6 +421,22 @@ def _sync_one_thread(
         _record_synced_pair(ledger, thread_id, normal_fp, voice_fp, "same_content")
         return CodexThreadSyncResult(thread_id, "already_synced", None, "same_content")
 
+    append_only_result = _sync_append_only_prefix_conflict(
+        thread_id,
+        normal_row=normal_row,
+        voice_row=voice_row,
+        normal_home=normal_home,
+        voice_home=voice_home,
+        normal_db=normal_db,
+        voice_db=voice_db,
+        normal_fp=normal_fp,
+        voice_fp=voice_fp,
+        ledger=ledger,
+        stability_delay_seconds=stability_delay_seconds,
+    )
+    if append_only_result is not None:
+        return append_only_result
+
     previous = ledger.get(thread_id)
     if not isinstance(previous, dict):
         _record_conflict(ledger, thread_id, normal_fp, voice_fp, "both_homes_changed")
@@ -473,6 +489,74 @@ def _sync_one_thread(
             overwrite=True,
         )
     return CodexThreadSyncResult(thread_id, "already_synced", None, "ledger_current")
+
+
+def _sync_append_only_prefix_conflict(
+    thread_id: str,
+    *,
+    normal_row: dict[str, Any],
+    voice_row: dict[str, Any],
+    normal_home: Path,
+    voice_home: Path,
+    normal_db: Path,
+    voice_db: Path,
+    normal_fp: dict[str, Any],
+    voice_fp: dict[str, Any],
+    ledger: dict[str, Any],
+    stability_delay_seconds: float,
+) -> CodexThreadSyncResult | None:
+    normal_size = int(normal_fp.get("rollout_size") or 0)
+    voice_size = int(voice_fp.get("rollout_size") or 0)
+    if normal_size == voice_size:
+        return None
+
+    normal_rollout = _source_rollout_path(normal_row, normal_home, thread_id)
+    voice_rollout = _source_rollout_path(voice_row, voice_home, thread_id)
+    if normal_rollout is None or voice_rollout is None:
+        return None
+
+    if normal_size > voice_size:
+        if not _rollout_has_prefix(normal_rollout, voice_rollout):
+            return None
+        if not _target_row_safe_for_overwrite(voice_row, voice_home, thread_id):
+            return CodexThreadSyncResult(
+                thread_id, "skipped", "normal_to_voice", "target_active"
+            )
+        return _sync_direction(
+            thread_id,
+            source_row=normal_row,
+            target_row=voice_row,
+            source_home=normal_home,
+            target_home=voice_home,
+            source_db=normal_db,
+            target_db=voice_db,
+            direction="normal_to_voice",
+            success_reason="synced_append_only_to_voice",
+            ledger=ledger,
+            stability_delay_seconds=stability_delay_seconds,
+            overwrite=True,
+        )
+
+    if not _rollout_has_prefix(voice_rollout, normal_rollout):
+        return None
+    if not _target_row_safe_for_overwrite(normal_row, normal_home, thread_id):
+        return CodexThreadSyncResult(
+            thread_id, "skipped", "voice_to_normal", "target_active"
+        )
+    return _sync_direction(
+        thread_id,
+        source_row=voice_row,
+        target_row=normal_row,
+        source_home=voice_home,
+        target_home=normal_home,
+        source_db=voice_db,
+        target_db=normal_db,
+        direction="voice_to_normal",
+        success_reason="synced_append_only_to_normal",
+        ledger=ledger,
+        stability_delay_seconds=stability_delay_seconds,
+        overwrite=True,
+    )
 
 
 def _sync_direction(
@@ -722,6 +806,22 @@ def _rollout_open_for_write(path: Path) -> bool:
         if "w" in fd or "u" in fd:
             return True
     return False
+
+
+def _rollout_has_prefix(candidate: Path, prefix: Path) -> bool:
+    try:
+        candidate_size = candidate.stat().st_size
+        prefix_size = prefix.stat().st_size
+    except OSError:
+        return False
+    if prefix_size > candidate_size:
+        return False
+
+    with candidate.open("rb") as candidate_handle, prefix.open("rb") as prefix_handle:
+        for prefix_chunk in iter(lambda: prefix_handle.read(1024 * 1024), b""):
+            if candidate_handle.read(len(prefix_chunk)) != prefix_chunk:
+                return False
+    return True
 
 
 def _thread_fingerprint(

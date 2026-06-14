@@ -22,6 +22,12 @@ from openbase_coder_cli.codex_home_instructions import (
     ensure_openbase_agents_md,
     ensure_openbase_instruction_md,
 )
+from openbase_coder_cli.dispatcher_config import (
+    DISPATCHER_VOICE_ID_KEY,
+    DISPATCHER_VOICE_NAME_KEY,
+    STT_PROVIDER_KEY,
+    TTS_PROVIDER_KEY,
+)
 from openbase_coder_cli.paths import (
     CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH,
     CODEX_DISPATCHER_CONFIG_PATH,
@@ -45,6 +51,18 @@ from openbase_coder_cli.services.launchd import install_all_services
 from openbase_coder_cli.services.tailscale_serve import (
     configure_tailscale_serve,
     tailscale_serve_health,
+)
+from openbase_coder_cli.stt_providers import (
+    ASSEMBLYAI_STT_PROVIDER_ID,
+    LOCAL_MLX_WHISPER_STT_PROVIDER_ID,
+    OPENBASE_CLOUD_STT_PROVIDER_ID,
+    download_local_mlx_whisper,
+)
+from openbase_coder_cli.tts_providers import (
+    CARTESIA_PROVIDER_ID,
+    KOKORO_PROVIDER_ID,
+    OPENBASE_CLOUD_TTS_PROVIDER_ID,
+    get_tts_provider,
 )
 
 WORKSPACE_REPO = "https://github.com/openbase-community/openbase-coder-workspace.git"
@@ -89,6 +107,15 @@ CODEX_HOME_DEFAULT_DISPATCHER_CONFIG = {
     },
 }
 CODING_BACKEND_OPTIONS = SUPPORTED_BACKENDS
+AUDIO_PROVIDER_OPENBASE_CLOUD = "openbase-cloud"
+AUDIO_PROVIDER_CARTESIA = "cartesia"
+AUDIO_PROVIDER_LOCAL = "local"
+AUDIO_PROVIDER_OPTIONS = (
+    AUDIO_PROVIDER_OPENBASE_CLOUD,
+    AUDIO_PROVIDER_CARTESIA,
+    AUDIO_PROVIDER_LOCAL,
+)
+DEFAULT_AUDIO_PROVIDER = AUDIO_PROVIDER_OPENBASE_CLOUD
 
 
 @click.command()
@@ -145,6 +172,15 @@ CODING_BACKEND_OPTIONS = SUPPORTED_BACKENDS
         "existing env files are only changed when this option is provided."
     ),
 )
+@click.option(
+    "--audio-provider",
+    type=click.Choice(AUDIO_PROVIDER_OPTIONS),
+    default=None,
+    help=(
+        "Voice audio provider. New dispatcher configs use openbase-cloud when "
+        "omitted; existing configs are only changed when this option is provided."
+    ),
+)
 def setup(
     workspace_dir: str,
     env_file: str,
@@ -154,6 +190,7 @@ def setup(
     skip_services: bool,
     link_codex_config: bool,
     coding_backend: str | None,
+    audio_provider: str | None,
 ) -> None:
     """Full install flow for Openbase Coder."""
     if platform.system() not in ("Darwin", "Linux"):
@@ -185,7 +222,9 @@ def setup(
     # --- Symlink Codex auth into the service CODEX_HOME ---
     _symlink_codex_auth()
     _ensure_codex_home_default_files(workspace_dir)
-    _ensure_codex_home_dispatcher_config()
+    _ensure_codex_home_dispatcher_config(audio_provider=audio_provider)
+    if audio_provider == AUDIO_PROVIDER_LOCAL:
+        _download_local_audio_models()
     _symlink_codex_home_skills(workspace_dir)
 
     # --- Initialize CLI workspace ---
@@ -533,10 +572,15 @@ def _ensure_legacy_symlink(
     click.echo(f"Linked {label} {legacy_path} -> {canonical_path}")
 
 
-def _ensure_codex_home_dispatcher_config() -> None:
+def _ensure_codex_home_dispatcher_config(audio_provider: str | None = None) -> None:
     """Create the missing Openbase dispatcher config."""
     _migrate_legacy_codex_home_dispatcher_config()
     if CODEX_DISPATCHER_CONFIG_PATH.exists():
+        if audio_provider:
+            _update_dispatcher_audio_provider(
+                CODEX_DISPATCHER_CONFIG_PATH,
+                audio_provider,
+            )
         click.echo(
             f"Openbase dispatcher config already exists at "
             f"{CODEX_DISPATCHER_CONFIG_PATH}"
@@ -546,11 +590,64 @@ def _ensure_codex_home_dispatcher_config() -> None:
 
     CODEX_DISPATCHER_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CODEX_DISPATCHER_CONFIG_PATH.write_text(
-        json.dumps(CODEX_HOME_DEFAULT_DISPATCHER_CONFIG, indent=2) + "\n",
+        json.dumps(
+            _default_dispatcher_config(audio_provider or DEFAULT_AUDIO_PROVIDER),
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     click.echo(f"Created Openbase dispatcher config at {CODEX_DISPATCHER_CONFIG_PATH}")
     _ensure_legacy_dispatcher_config_link()
+
+
+def _default_dispatcher_config(audio_provider: str) -> dict[str, object]:
+    return {
+        **CODEX_HOME_DEFAULT_DISPATCHER_CONFIG,
+        **_audio_provider_config(audio_provider),
+    }
+
+
+def _update_dispatcher_audio_provider(path: Path, audio_provider: str) -> None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.update(_audio_provider_config(audio_provider))
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    click.echo(f"Updated voice audio provider in {path}.")
+
+
+def _audio_provider_config(audio_provider: str) -> dict[str, str]:
+    if audio_provider == AUDIO_PROVIDER_OPENBASE_CLOUD:
+        tts_provider = OPENBASE_CLOUD_TTS_PROVIDER_ID
+        stt_provider = OPENBASE_CLOUD_STT_PROVIDER_ID
+    elif audio_provider == AUDIO_PROVIDER_CARTESIA:
+        tts_provider = CARTESIA_PROVIDER_ID
+        stt_provider = ASSEMBLYAI_STT_PROVIDER_ID
+    elif audio_provider == AUDIO_PROVIDER_LOCAL:
+        tts_provider = KOKORO_PROVIDER_ID
+        stt_provider = LOCAL_MLX_WHISPER_STT_PROVIDER_ID
+    else:
+        raise click.ClickException(f"Unsupported audio provider: {audio_provider}")
+
+    voice = get_tts_provider(tts_provider).default_dispatcher_voice()
+    return {
+        TTS_PROVIDER_KEY: tts_provider,
+        STT_PROVIDER_KEY: stt_provider,
+        DISPATCHER_VOICE_ID_KEY: voice.id,
+        DISPATCHER_VOICE_NAME_KEY: voice.name,
+    }
+
+
+def _download_local_audio_models() -> None:
+    click.echo("Downloading local TTS voices...")
+    get_tts_provider(KOKORO_PROVIDER_ID).download_all_voices()
+    click.echo("Downloading local STT model...")
+    download_local_mlx_whisper()
+    click.echo("Downloaded local voice audio models.")
 
 
 def _migrate_legacy_codex_home_dispatcher_config() -> None:

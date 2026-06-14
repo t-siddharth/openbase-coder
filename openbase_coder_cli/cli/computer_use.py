@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ import click
 import httpx
 
 from openbase_coder_cli.cli.local_server import local_server_request, response_error
+from openbase_coder_cli.linux_computer_use import serve_linux_companion
 
 DEFAULT_COMPANION_PORT = 39281
 DEFAULT_COMPANION_SECRET = "openbase-livekit-companion-local"
@@ -20,10 +22,16 @@ COMPANION_NAME = "Openbase Screen Share"
 
 @click.group("computer-use")
 def computer_use() -> None:
-    """Use the desktop screen-share companion for OpenAI Computer Use."""
-    if platform.system() != "Darwin":
+    """Use the Linux desktop screen-share companion for OpenAI Computer Use."""
+    if platform.system() == "Darwin":
         raise click.ClickException(
-            "Computer use and screen sharing are only supported on macOS."
+            "The openbase-coder computer-use CLI is Linux-only. On macOS, use "
+            "the openbase-computer-use skill's native Computer Use tool path."
+        )
+    if platform.system() != "Linux":
+        raise click.ClickException(
+            "The openbase-coder computer-use CLI is only supported on Linux "
+            "Openbase DevSpace desktops."
         )
 
 
@@ -128,6 +136,26 @@ def status() -> None:
     click.echo(f"Companion state: {state}")
     if error := response.get("error"):
         click.echo(f"Error: {error}")
+    linux = response.get("linux")
+    if isinstance(linux, dict):
+        click.echo(f"Display: {linux.get('display') or 'unknown'}")
+        click.echo(
+            "Linux tools: "
+            f"xdotool={'yes' if linux.get('xdotool') else 'no'}, "
+            f"screenshot={'yes' if linux.get('screenshot') else 'no'}, "
+            f"imagemagick={'yes' if linux.get('imagemagick') else 'no'}"
+        )
+
+
+@computer_use.command("companion", hidden=True)
+def companion() -> None:
+    """Run the Linux computer-use companion IPC server in the foreground."""
+    port = int(os.environ.get("OPENBASE_LIVEKIT_COMPANION_IPC_PORT", DEFAULT_COMPANION_PORT))
+    secret = os.environ.get(
+        "OPENBASE_LIVEKIT_COMPANION_IPC_SECRET",
+        DEFAULT_COMPANION_SECRET,
+    )
+    serve_linux_companion(port=port, secret=secret)
 
 
 def _load_companion_session(room_name: str) -> dict[str, Any]:
@@ -171,40 +199,33 @@ class CompanionClient:
         if self._status_or_none() is not None:
             return
 
-        if platform.system() != "Darwin":
-            raise click.ClickException(
-                "The screen-share companion app is only supported on macOS."
-            )
-
-        app_path = _find_companion_app()
-        if app_path is None:
-            raise click.ClickException(
-                "LiveKit companion app bundle was not found. Start Openbase Coder or set "
-                "OPENBASE_LIVEKIT_COMPANION_APP_PATH."
-            )
-
         log_path = os.environ.get(
             "OPENBASE_LIVEKIT_COMPANION_LOG_PATH",
             str(Path.home() / ".openbase" / "logs" / "livekit-companion.log"),
         )
         Path(log_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
-        subprocess.Popen(
-            [
-                "/usr/bin/open",
-                "-n",
-                str(app_path),
-                "--args",
-                "--openbase-ipc-port",
-                str(self.port),
-                "--openbase-ipc-secret",
-                self.secret,
-                "--openbase-log-path",
-                str(Path(log_path).expanduser()),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        log_handle = Path(log_path).expanduser().open("a", encoding="utf-8")
+        env = {
+            **os.environ,
+            "OPENBASE_LIVEKIT_COMPANION_IPC_PORT": str(self.port),
+            "OPENBASE_LIVEKIT_COMPANION_IPC_SECRET": self.secret,
+        }
+        try:
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "openbase_coder_cli.cli",
+                    "computer-use",
+                    "companion",
+                ],
+                stdout=log_handle,
+                stderr=log_handle,
+                start_new_session=True,
+                env=env,
+            )
+        finally:
+            log_handle.close()
 
         deadline = time.monotonic() + 10
         last_error = "unknown error"
