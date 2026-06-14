@@ -118,6 +118,7 @@ If you installed with `uv tool`, omit `uvx --python 3.13` from those commands.
 - [Getting Started](docs/getting-started.md)
 - [Downloads](docs/downloads.md)
 - [Manual Setup](docs/manual-installation.md)
+- [Local-Only Mode](docs/local-only.md)
 - [Uninstall](docs/uninstall.md)
 - [Commands](docs/commands/index.md)
 - [Configuration](docs/configuration.md)
