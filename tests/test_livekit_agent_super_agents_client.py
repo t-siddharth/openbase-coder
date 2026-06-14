@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ import pytest
 
 from openbase_coder_cli.livekit_agent.super_agents_client import (
     SuperAgentsLiveKitClient,
+    _extract_turn_id,
     _speech_text_from_progress,
 )
 
@@ -100,6 +102,168 @@ class FakeCodexSuperAgentsBackend(FakeSuperAgentsBackend):
         }
 
 
+class FakeQueuedSuperAgentsBackend(FakeSuperAgentsBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.progress_inputs: list[Any] = []
+        self.latest_progress_calls = 0
+
+    async def start_turn_by_label(
+        self,
+        input_data,
+        turn_input: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.started_turns.append((input_data, turn_input))
+        return {
+            "queued": True,
+            "threadId": "dispatcher-thread",
+            "queueDepth": 1,
+            "item": {
+                "id": "q_queued-follow-up",
+                "threadId": "dispatcher-thread",
+                "status": "queued",
+            },
+        }
+
+    async def progress_by_label(self, input_data) -> dict[str, Any]:
+        self.progress_calls += 1
+        self.progress_inputs.append(input_data)
+        if input_data.turn_id == "q_queued-follow-up":
+            raise AssertionError("LiveKit must not poll queued item ids as turn ids")
+        if input_data.turn_id == "turn-2":
+            return {
+                "status": "waiting",
+                "threadId": input_data.thread_id,
+                "turnId": "turn-2",
+                "summary": {
+                    "items": [
+                        {
+                            "type": "agentMessage",
+                            "text": "The queued dispatcher answer is ready.",
+                        }
+                    ]
+                },
+            }
+        self.latest_progress_calls += 1
+        return {
+            "status": "running",
+            "threadId": input_data.thread_id,
+            "turnId": "turn-1" if self.latest_progress_calls == 1 else "turn-2",
+        }
+
+
+class FakeExternallyActiveSuperAgentsBackend(FakeSuperAgentsBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.resolved_labels: list[Any] = []
+        self.steered: list[tuple[Any, str]] = []
+
+    async def resolve_label(self, input_data) -> dict[str, Any]:
+        self.resolved_labels.append(input_data)
+        return {
+            "status": "running",
+            "threadId": input_data.thread_id,
+            "turnId": "active-turn-1",
+        }
+
+    async def steer_by_label(self, input_data, prompt: str) -> dict[str, Any]:
+        self.steered.append((input_data, prompt))
+        return {"turnId": input_data.turn_id, "prompt": prompt}
+
+    async def progress_by_label(self, input_data) -> dict[str, Any]:
+        self.progress_calls += 1
+        return {
+            "status": "waiting",
+            "threadId": input_data.thread_id,
+            "turnId": input_data.turn_id,
+            "summary": {
+                "items": [
+                    {
+                        "type": "agentMessage",
+                        "text": "The steered dispatcher answer is ready.",
+                    }
+                ]
+            },
+        }
+
+
+class FakeSlowStartSuperAgentsBackend(FakeSuperAgentsBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.start_called = asyncio.Event()
+        self.release_start = asyncio.Event()
+        self.steered: list[tuple[Any, str]] = []
+
+    async def start_turn_by_label(
+        self,
+        input_data,
+        turn_input: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.started_turns.append((input_data, turn_input))
+        self.start_called.set()
+        await self.release_start.wait()
+        return {"turnId": "turn-1"}
+
+    async def steer_by_label(self, input_data, prompt: str) -> dict[str, Any]:
+        self.steered.append((input_data, prompt))
+        return {"turnId": input_data.turn_id, "prompt": prompt}
+
+    async def progress_by_label(self, input_data) -> dict[str, Any]:
+        self.progress_calls += 1
+        return {
+            "status": "waiting",
+            "threadId": input_data.thread_id,
+            "turnId": input_data.turn_id,
+            "summary": {
+                "items": [
+                    {
+                        "type": "agentMessage",
+                        "text": "The interrupted turn accepted steering.",
+                    }
+                ]
+            },
+        }
+
+
+class FakeStaleActiveSuperAgentsBackend(FakeSuperAgentsBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.steered: list[tuple[Any, str]] = []
+
+    async def resolve_label(self, input_data) -> dict[str, Any]:
+        return {
+            "status": "running",
+            "threadId": input_data.thread_id,
+            "turnId": "stale-turn",
+        }
+
+    async def steer_by_label(self, input_data, prompt: str) -> dict[str, Any]:
+        self.steered.append((input_data, prompt))
+        return {"turnId": input_data.turn_id, "prompt": prompt}
+
+    async def progress_by_label(self, input_data) -> dict[str, Any]:
+        self.progress_calls += 1
+        if input_data.turn_id == "stale-turn":
+            return {
+                "status": "completed",
+                "threadId": input_data.thread_id,
+                "turnId": "stale-turn",
+            }
+        return {
+            "status": "waiting",
+            "threadId": input_data.thread_id,
+            "turnId": input_data.turn_id,
+            "summary": {
+                "items": [
+                    {
+                        "type": "agentMessage",
+                        "text": "The replacement turn is ready.",
+                    }
+                ]
+            },
+        }
+
+
 @pytest.mark.asyncio
 async def test_super_agents_livekit_client_creates_thread_and_turn_through_backend(
     tmp_path: Path,
@@ -164,6 +328,103 @@ async def test_super_agents_livekit_client_starts_codex_turn_by_thread_id(
     assert backend.started_direct_turns[0]["prompt"] == "hello"
     assert result["_livekit_turn_id"] == "direct-turn-1"
     assert result["_livekit_speech_text"] == "The direct dispatcher answer is ready."
+
+
+@pytest.mark.asyncio
+async def test_super_agents_livekit_client_waits_for_queued_turn_to_start(
+    tmp_path: Path,
+) -> None:
+    backend = FakeQueuedSuperAgentsBackend()
+    state_path = tmp_path / "livekit-voice-route.json"
+    client = SuperAgentsLiveKitClient(
+        cwd="/tmp/project",
+        state_path=str(state_path),
+        backend_client=backend,
+    )
+
+    result = await client.run_turn("hello")
+
+    assert result["_livekit_turn_id"] == "turn-2"
+    assert result["_livekit_speech_text"] == "The queued dispatcher answer is ready."
+    assert [input_data.turn_id for input_data in backend.progress_inputs] == [
+        None,
+        None,
+        "turn-2",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_super_agents_livekit_client_steers_backend_active_turn(
+    tmp_path: Path,
+) -> None:
+    backend = FakeExternallyActiveSuperAgentsBackend()
+    state_path = tmp_path / "livekit-voice-route.json"
+    client = SuperAgentsLiveKitClient(
+        cwd="/tmp/project",
+        state_path=str(state_path),
+        backend_client=backend,
+    )
+
+    result = await client.run_turn("please adjust that")
+
+    assert backend.started_turns == []
+    assert len(backend.steered) == 1
+    steer_input, prompt = backend.steered[0]
+    assert steer_input.turn_id == "active-turn-1"
+    assert prompt == "please adjust that"
+    assert result["_livekit_turn_id"] == "active-turn-1"
+    assert result["_livekit_speech_text"] == "The steered dispatcher answer is ready."
+
+
+@pytest.mark.asyncio
+async def test_super_agents_livekit_client_preserves_started_turn_after_cancellation(
+    tmp_path: Path,
+) -> None:
+    backend = FakeSlowStartSuperAgentsBackend()
+    state_path = tmp_path / "livekit-voice-route.json"
+    client = SuperAgentsLiveKitClient(
+        cwd="/tmp/project",
+        state_path=str(state_path),
+        backend_client=backend,
+    )
+
+    first = asyncio.create_task(client.run_turn("write about strawberries"))
+    await backend.start_called.wait()
+    first.cancel()
+    backend.release_start.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    result = await client.run_turn("change it to blueberries")
+
+    assert len(backend.started_turns) == 1
+    assert len(backend.steered) == 1
+    steer_input, prompt = backend.steered[0]
+    assert steer_input.turn_id == "turn-1"
+    assert prompt == "change it to blueberries"
+    assert result["_livekit_turn_id"] == "turn-1"
+    assert result["_livekit_speech_text"] == "The interrupted turn accepted steering."
+
+
+@pytest.mark.asyncio
+async def test_super_agents_livekit_client_does_not_steer_stale_active_turn(
+    tmp_path: Path,
+) -> None:
+    backend = FakeStaleActiveSuperAgentsBackend()
+    state_path = tmp_path / "livekit-voice-route.json"
+    client = SuperAgentsLiveKitClient(
+        cwd="/tmp/project",
+        state_path=str(state_path),
+        backend_client=backend,
+    )
+
+    result = await client.run_turn("start fresh")
+
+    assert backend.steered == []
+    assert len(backend.started_turns) == 1
+    assert result["_livekit_turn_id"] == "turn-1"
+    assert result["_livekit_speech_text"] == "The replacement turn is ready."
 
 
 @pytest.mark.asyncio
@@ -254,6 +515,18 @@ def test_speech_text_from_progress_ignores_turn_ids() -> None:
     }
 
     assert _speech_text_from_progress(progress) == ""
+
+
+def test_extract_turn_id_ignores_queued_item_id() -> None:
+    payload = {
+        "queued": True,
+        "item": {
+            "id": "q_queued-follow-up",
+            "status": "queued",
+        },
+    }
+
+    assert _extract_turn_id(payload) is None
 
 
 def test_speech_text_from_progress_ignores_user_message_text() -> None:

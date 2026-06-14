@@ -149,6 +149,8 @@ class SuperAgentsLiveKitClient:
         dispatch_id = f"voice-{uuid.uuid4().hex[:12]}"
         dispatch_started = time.monotonic()
         prompt_debug = _prompt_debug_fields(prompt)
+        turn_id: str | None = None
+        preserve_active_turn = False
 
         async with self._turn_start_lock:
             thread_id = await self._ensure_thread()
@@ -165,12 +167,37 @@ class SuperAgentsLiveKitClient:
             if self._active_turn_id:
                 turn_id = await self._steer_turn(thread_id, prompt)
             else:
-                turn_id = await self._start_turn(
-                    thread_id,
-                    prompt,
-                    developer_instructions=developer_instructions,
-                    dispatch_id=dispatch_id,
-                )
+                active_turn_id = await self._resolve_active_turn_id(thread_id)
+                if active_turn_id:
+                    self._active_turn_id = active_turn_id
+                    turn_id = await self._steer_turn(thread_id, prompt)
+                else:
+                    start_task = asyncio.create_task(
+                        self._start_turn(
+                            thread_id,
+                            prompt,
+                            developer_instructions=developer_instructions,
+                            dispatch_id=dispatch_id,
+                        )
+                    )
+                    try:
+                        turn_id = await asyncio.shield(start_task)
+                    except asyncio.CancelledError:
+                        turn_id = await start_task
+                        self._active_turn_id = turn_id
+                        self._active_turn_started_at = time.monotonic()
+                        self._active_turn_dispatch_id = dispatch_id
+                        preserve_active_turn = True
+                        logger.info(
+                            "%s stage=turn_start_cancelled_after_backend_start "
+                            "dispatch_id=%s thread_id=%s turn_id=%s elapsed_ms=%d",
+                            DISPATCH_TIMING_LOG,
+                            dispatch_id,
+                            thread_id,
+                            turn_id,
+                            int((time.monotonic() - dispatch_started) * 1000),
+                        )
+                        raise
             self._active_turn_id = turn_id
             self._active_turn_started_at = time.monotonic()
             self._active_turn_dispatch_id = dispatch_id
@@ -185,30 +212,43 @@ class SuperAgentsLiveKitClient:
             prompt_debug["hash"],
             prompt_debug["length"],
         )
-        result = await self._wait_for_turn(thread_id, turn_id)
-        speech_text = _speech_text_from_progress(result)
-        completed_turn = {
-            "id": turn_id,
-            "status": result.get("status") or result.get("summary", {}).get("status"),
-            "_livekit_speech_text": speech_text,
-            "_livekit_turn_id": turn_id,
-            "progress": result,
-        }
-        if self._active_turn_id == turn_id:
-            self._active_turn_id = None
-            self._active_turn_started_at = None
-            self._active_turn_dispatch_id = None
-        logger.info(
-            "%s stage=voice_turn_result dispatch_id=%s turn_id=%s status=%s "
-            "elapsed_ms=%d speech_chars=%d",
-            DISPATCH_TIMING_LOG,
-            dispatch_id,
-            turn_id,
-            completed_turn.get("status"),
-            int((time.monotonic() - dispatch_started) * 1000),
-            len(speech_text),
-        )
-        return completed_turn
+        try:
+            result = await self._wait_for_turn(thread_id, turn_id)
+            speech_text = _speech_text_from_progress(result)
+            completed_turn = {
+                "id": turn_id,
+                "status": result.get("status")
+                or result.get("summary", {}).get("status"),
+                "_livekit_speech_text": speech_text,
+                "_livekit_turn_id": turn_id,
+                "progress": result,
+            }
+            logger.info(
+                "%s stage=voice_turn_result dispatch_id=%s turn_id=%s status=%s "
+                "elapsed_ms=%d speech_chars=%d",
+                DISPATCH_TIMING_LOG,
+                dispatch_id,
+                turn_id,
+                completed_turn.get("status"),
+                int((time.monotonic() - dispatch_started) * 1000),
+                len(speech_text),
+            )
+            return completed_turn
+        except asyncio.CancelledError:
+            preserve_active_turn = True
+            logger.info(
+                "%s stage=voice_turn_cancelled dispatch_id=%s turn_id=%s elapsed_ms=%d",
+                DISPATCH_TIMING_LOG,
+                dispatch_id,
+                turn_id,
+                int((time.monotonic() - dispatch_started) * 1000),
+            )
+            raise
+        finally:
+            if not preserve_active_turn and turn_id and self._active_turn_id == turn_id:
+                self._active_turn_id = None
+                self._active_turn_started_at = None
+                self._active_turn_dispatch_id = None
 
     async def _start_turn(
         self,
@@ -240,6 +280,10 @@ class SuperAgentsLiveKitClient:
         ):
             turn_input["developerInstructions"] = effective_developer_instructions
 
+        previous_turn_id = None
+        if not (self._backend_is_codex() and hasattr(self._backend_client, "start_turn")):
+            previous_turn_id = await self._latest_real_turn_id(thread_id)
+
         if self._backend_is_codex() and hasattr(self._backend_client, "start_turn"):
             result = await self._backend_client.start_turn(
                 {"threadId": thread_id, **turn_input}
@@ -249,6 +293,35 @@ class SuperAgentsLiveKitClient:
                 self._query(thread_id=thread_id),
                 turn_input,
             )
+        if _response_is_queued(result):
+            queued_id = _extract_queued_id(result)
+            logger.info(
+                "%s stage=turn_start_queued dispatch_id=%s thread_id=%s "
+                "queued_id=%s blocked_by_turn_id=%s queue_depth=%s",
+                DISPATCH_TIMING_LOG,
+                dispatch_id,
+                thread_id,
+                queued_id,
+                previous_turn_id,
+                result.get("queueDepth") or result.get("position"),
+            )
+            turn_id = await self._wait_for_queued_turn_to_start(
+                thread_id,
+                queued_id=queued_id,
+                blocked_by_turn_id=previous_turn_id,
+                dispatch_id=dispatch_id,
+            )
+            logger.info(
+                "%s stage=queued_turn_started dispatch_id=%s thread_id=%s "
+                "queued_id=%s turn_id=%s",
+                DISPATCH_TIMING_LOG,
+                dispatch_id,
+                thread_id,
+                queued_id,
+                turn_id,
+            )
+            return turn_id
+
         turn_id = _extract_turn_id(result)
         if not turn_id:
             raise RuntimeError("Super Agents did not return a turn id.")
@@ -260,6 +333,136 @@ class SuperAgentsLiveKitClient:
             turn_id,
         )
         return turn_id
+
+    async def _resolve_active_turn_id(self, thread_id: str) -> str | None:
+        resolve_label = getattr(self._backend_client, "resolve_label", None)
+        if resolve_label is None:
+            return None
+        try:
+            result = await resolve_label(
+                self._query(thread_id=thread_id, prefer="latest_active")
+            )
+        except Exception:
+            logger.debug(
+                "No active Super Agents turn found before voice follow-up",
+                exc_info=True,
+            )
+            return None
+        status = str(result.get("status") or "").lower()
+        if status not in {"running", "waiting", "inprogress", "in_progress"}:
+            return None
+        turn_id = _extract_turn_id(result)
+        if not turn_id:
+            return None
+        progress_status = await self._turn_status(thread_id, turn_id)
+        if progress_status and progress_status not in {
+            "running",
+            "waiting",
+            "queued",
+            "inprogress",
+            "in_progress",
+        }:
+            logger.info(
+                "%s stage=active_turn_resolved_but_inactive thread_id=%s "
+                "turn_id=%s resolved_status=%s progress_status=%s",
+                DISPATCH_TIMING_LOG,
+                thread_id,
+                turn_id,
+                status,
+                progress_status,
+            )
+            return None
+        logger.info(
+            "%s stage=active_turn_resolved_for_steering thread_id=%s turn_id=%s status=%s",
+            DISPATCH_TIMING_LOG,
+            thread_id,
+            turn_id,
+            status,
+        )
+        return turn_id
+
+    async def _turn_status(self, thread_id: str, turn_id: str) -> str | None:
+        try:
+            progress = await self._backend_client.progress_by_label(
+                self._query(
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    include_turn=True,
+                    max_items=1,
+                    max_output_chars=200,
+                )
+            )
+        except Exception:
+            logger.debug(
+                "Could not validate Super Agents active turn before steering",
+                exc_info=True,
+            )
+            return None
+        return str(
+            progress.get("status")
+            or progress.get("summary", {}).get("status")
+            or ""
+        ).lower()
+
+    async def _latest_real_turn_id(self, thread_id: str) -> str | None:
+        try:
+            progress = await self._backend_client.progress_by_label(
+                self._query(
+                    thread_id=thread_id,
+                    include_turn=True,
+                    max_items=1,
+                    max_output_chars=200,
+                )
+            )
+        except Exception:
+            logger.debug(
+                "Could not read latest Super Agents turn before queue wait",
+                exc_info=True,
+            )
+            return None
+        turn_id = _extract_turn_id(progress)
+        return turn_id if turn_id and not _is_queue_item_id(turn_id) else None
+
+    async def _wait_for_queued_turn_to_start(
+        self,
+        thread_id: str,
+        *,
+        queued_id: str | None,
+        blocked_by_turn_id: str | None,
+        dispatch_id: str,
+    ) -> str:
+        while True:
+            progress = await self._backend_client.progress_by_label(
+                self._query(
+                    thread_id=thread_id,
+                    include_turn=True,
+                    max_items=1,
+                    max_output_chars=200,
+                )
+            )
+            turn_id = _extract_turn_id(progress)
+            status = str(
+                progress.get("status")
+                or progress.get("summary", {}).get("status")
+                or ""
+            ).lower()
+            if (
+                turn_id
+                and not _is_queue_item_id(turn_id)
+                and turn_id != blocked_by_turn_id
+            ):
+                return turn_id
+            logger.info(
+                "%s stage=queued_turn_wait dispatch_id=%s thread_id=%s "
+                "queued_id=%s latest_turn_id=%s latest_status=%s",
+                DISPATCH_TIMING_LOG,
+                dispatch_id,
+                thread_id,
+                queued_id,
+                turn_id,
+                status,
+            )
+            await asyncio.sleep(TURN_POLL_INTERVAL_SECONDS)
 
     async def _steer_turn(self, thread_id: str, prompt: str) -> str:
         assert self._active_turn_id is not None
@@ -631,16 +834,43 @@ def _extract_thread_id(payload: dict[str, Any]) -> str | None:
 
 
 def _extract_turn_id(payload: dict[str, Any]) -> str | None:
+    if _response_is_queued(payload):
+        return None
     for key in ("turnId", "turn_id"):
         value = payload.get(key)
-        if isinstance(value, str) and value:
+        if isinstance(value, str) and value and not _is_queue_item_id(value):
             return value
     turn = payload.get("turn") or payload.get("item")
     if isinstance(turn, dict):
         value = turn.get("id") or turn.get("turnId")
-        if isinstance(value, str) and value:
+        if isinstance(value, str) and value and not _is_queue_item_id(value):
             return value
     return None
+
+
+def _response_is_queued(payload: dict[str, Any]) -> bool:
+    if payload.get("queued") is True:
+        return True
+    item = payload.get("item")
+    if not isinstance(item, dict):
+        return False
+    status = str(item.get("status") or "").lower()
+    item_id = item.get("id")
+    return status in {"queued", "starting"} and (
+        not isinstance(item_id, str) or _is_queue_item_id(item_id)
+    )
+
+
+def _extract_queued_id(payload: dict[str, Any]) -> str | None:
+    item = payload.get("item")
+    if not isinstance(item, dict):
+        return None
+    item_id = item.get("id")
+    return item_id if isinstance(item_id, str) and item_id else None
+
+
+def _is_queue_item_id(value: str) -> bool:
+    return value.startswith("q_")
 
 
 def _speech_text_from_progress(progress: dict[str, Any]) -> str:
@@ -666,9 +896,62 @@ def _speech_text_from_progress(progress: dict[str, Any]) -> str:
     )
     for candidate in candidates:
         text = find_useful_text(candidate)
-        if text:
+        if text and not _should_ignore_speech_text(text, progress):
             return _speech_excerpt(text)
     return ""
+
+
+def _should_ignore_speech_text(text: str, progress: dict[str, Any]) -> bool:
+    normalized = _normalize_speech_candidate(text)
+    if _looks_like_metadata_identifier(normalized):
+        return True
+    return normalized in _user_message_texts(progress)
+
+
+def _user_message_texts(value: Any, depth: int = 0) -> set[str]:
+    if value is None or depth > 8:
+        return set()
+    if isinstance(value, list):
+        texts: set[str] = set()
+        for item in value:
+            texts.update(_user_message_texts(item, depth + 1))
+        return texts
+    if not isinstance(value, dict):
+        return set()
+
+    item_type = str(value.get("type") or value.get("role") or "").lower()
+    if item_type in {"user", "usermessage"}:
+        if text := _text_content(value.get("text") or value.get("content")):
+            return {_normalize_speech_candidate(text)}
+
+    texts: set[str] = set()
+    for child in value.values():
+        texts.update(_user_message_texts(child, depth + 1))
+    return texts
+
+
+def _text_content(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = [
+            item.get("text", "")
+            for item in value
+            if isinstance(item, dict) and item.get("type") == "text"
+        ]
+        return " ".join(part for part in parts if part).strip() or None
+    return None
+
+
+def _normalize_speech_candidate(text: str) -> str:
+    return text.strip().rstrip(".!?").strip().lower()
+
+
+def _looks_like_metadata_identifier(text: str) -> bool:
+    compact = text.replace("-", "").replace(" ", "")
+    if len(compact) >= 16 and re.fullmatch(r"[0-9a-f]+", compact):
+        return True
+    return bool(re.fullmatch(r"(?:[0-9a-f]{4,}[-\s]+){2,}[0-9a-f]{4,}", text))
 
 
 def _progress_has_pending_requests(progress: dict[str, Any]) -> bool:
