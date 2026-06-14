@@ -7,6 +7,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from openbase_coder_cli.backend_config import (
+    CLAUDE_CODE_BACKEND,
     CODEX_BACKEND,
     DEFAULT_CODING_BACKEND,
     OPENBASE_CLOUD_BACKEND,
@@ -33,7 +34,7 @@ BACKEND_OPTIONS = {
     },
 }
 
-SELECTABLE_BACKENDS = (CODEX_BACKEND, OPENBASE_CLOUD_BACKEND)
+SELECTABLE_BACKENDS = (CODEX_BACKEND, OPENBASE_CLOUD_BACKEND, CLAUDE_CODE_BACKEND)
 
 
 class CodingBackendSerializer(serializers.Serializer):

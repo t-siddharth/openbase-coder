@@ -45,6 +45,7 @@ def test_coding_backend_settings_defaults_when_env_file_missing(
     assert [option["id"] for option in response.data["supported_backends"]] == [
         "codex",
         "openbase_cloud",
+        "claude_code",
     ]
 
 
@@ -98,10 +99,11 @@ def test_coding_backend_settings_reads_legacy_backend(
     assert [option["id"] for option in response.data["supported_backends"]] == [
         "codex",
         "openbase_cloud",
+        "claude_code",
     ]
 
 
-def test_coding_backend_settings_rejects_claude_code_selection(
+def test_coding_backend_settings_persists_claude_code_selection(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -116,9 +118,13 @@ def test_coding_backend_settings_rejects_claude_code_selection(
         )
     )
 
-    assert response.status_code == 400
-    assert "backend" in response.data
-    assert not env_file.exists()
+    assert response.status_code == 200
+    assert response.data["backend"] == "claude_code"
+    assert response.data["changed"] is True
+    assert "Claude Code" in response.data["restart_hint"]
+    assert "OPENBASE_CODING_BACKEND=claude_code" in env_file.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_coding_backend_settings_rejects_unsupported_backend(
