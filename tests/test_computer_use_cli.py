@@ -36,7 +36,9 @@ class FakeCompanionClient:
         self.calls.append(("stop_screen_share", None))
         return {"ok": True, "state": "off"}
 
-    def start_computer_use(self, *, instructions: str, model: str | None, max_steps: int) -> dict:
+    def start_computer_use(
+        self, *, instructions: str, model: str | None, max_steps: int
+    ) -> dict:
         self.calls.append(
             (
                 "start_computer_use",
@@ -117,7 +119,9 @@ def test_companion_client_requests_display_source_for_screen_share(monkeypatch):
     response = computer_use_cli.CompanionClient().start_screen_share(session)
 
     assert response["state"] == "sharing"
-    assert captured_payloads == [{"roomUrl": "ws://localhost:7880", "token": "token", "sourceType": "display"}]
+    assert captured_payloads == [
+        {"roomUrl": "ws://localhost:7880", "token": "token", "sourceType": "display"}
+    ]
     assert session == {"roomUrl": "ws://localhost:7880", "token": "token"}
 
 
@@ -139,13 +143,17 @@ def test_start_stops_screen_share_if_computer_use_start_fails(monkeypatch):
     FakeCompanionClient.instances = []
 
     class FailingCompanionClient(FakeCompanionClient):
-        def start_computer_use(self, *, instructions: str, model: str | None, max_steps: int) -> dict:
+        def start_computer_use(
+            self, *, instructions: str, model: str | None, max_steps: int
+        ) -> dict:
             self.calls.append(("start_computer_use", instructions))
             raise RuntimeError("boom")
 
     def fake_request(method, url, **kwargs):
         assert method == "GET"
-        return httpx.Response(200, json={"roomUrl": "ws://localhost:7880", "companionToken": "token"})
+        return httpx.Response(
+            200, json={"roomUrl": "ws://localhost:7880", "companionToken": "token"}
+        )
 
     patch_local_server_request(monkeypatch, fake_request)
     monkeypatch.setattr(computer_use_cli, "CompanionClient", FailingCompanionClient)
@@ -154,7 +162,9 @@ def test_start_stops_screen_share_if_computer_use_start_fails(monkeypatch):
 
     assert result.exit_code != 0
     assert "Unable to start computer use" in result.output
-    assert [name for name, _ in FailingCompanionClient.instances[0].calls][-1] == "stop_screen_share"
+    assert [name for name, _ in FailingCompanionClient.instances[0].calls][
+        -1
+    ] == "stop_screen_share"
 
 
 def test_steer_replaces_active_instructions(monkeypatch):
@@ -164,17 +174,23 @@ def test_steer_replaces_active_instructions(monkeypatch):
     result = CliRunner().invoke(computer_use_cli.computer_use, ["steer", "new", "plan"])
 
     assert result.exit_code == 0
-    assert FakeCompanionClient.instances[0].calls == [("steer_computer_use", "new plan")]
+    assert FakeCompanionClient.instances[0].calls == [
+        ("steer_computer_use", "new plan")
+    ]
 
 
 def test_queue_appends_follow_up_instructions(monkeypatch):
     FakeCompanionClient.instances = []
     monkeypatch.setattr(computer_use_cli, "CompanionClient", FakeCompanionClient)
 
-    result = CliRunner().invoke(computer_use_cli.computer_use, ["queue", "then", "save"])
+    result = CliRunner().invoke(
+        computer_use_cli.computer_use, ["queue", "then", "save"]
+    )
 
     assert result.exit_code == 0
-    assert FakeCompanionClient.instances[0].calls == [("queue_computer_use", "then save")]
+    assert FakeCompanionClient.instances[0].calls == [
+        ("queue_computer_use", "then save")
+    ]
 
 
 def test_interrupt_calls_companion(monkeypatch):

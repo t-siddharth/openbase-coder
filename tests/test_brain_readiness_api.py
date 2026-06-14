@@ -57,7 +57,9 @@ def test_brain_readiness_response_reads_score_file(monkeypatch, tmp_path) -> Non
     assert response["age_seconds"] >= 0
 
 
-def test_brain_readiness_response_is_disabled_without_token(monkeypatch, tmp_path) -> None:
+def test_brain_readiness_response_is_disabled_without_token(
+    monkeypatch, tmp_path
+) -> None:
     score_path = tmp_path / "brain_score.json"
     missing_token_path = tmp_path / "missing-token"
     score_path.write_text(json.dumps({"brs": 84}), encoding="utf-8")
@@ -73,7 +75,9 @@ def test_brain_readiness_response_is_disabled_without_token(monkeypatch, tmp_pat
     assert response["disabled_reason"] == "missing_token"
 
 
-def test_brain_readiness_endpoint_uses_configured_score_path(monkeypatch, tmp_path) -> None:
+def test_brain_readiness_endpoint_uses_configured_score_path(
+    monkeypatch, tmp_path
+) -> None:
     score_path = tmp_path / "brain_score.json"
     score_path.write_text(json.dumps({"brs": 19}), encoding="utf-8")
     monkeypatch.setenv("OPENBASE_BRAIN_SCORE_TOKEN", "token-1")

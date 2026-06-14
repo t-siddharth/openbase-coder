@@ -34,7 +34,9 @@ def list_openbase_services_payload() -> dict:
 def run_openbase_service_action(service_name: str, action: str) -> dict:
     if action not in SERVICE_ACTIONS:
         valid = ", ".join(sorted(SERVICE_ACTIONS))
-        raise click.ClickException(f"Unsupported service action '{action}'. Valid: {valid}")
+        raise click.ClickException(
+            f"Unsupported service action '{action}'. Valid: {valid}"
+        )
 
     service = find_service(service_name)
 

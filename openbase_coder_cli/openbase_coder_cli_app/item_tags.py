@@ -45,7 +45,9 @@ def set_thread_tags(thread_id: str, tags: list[Any]) -> dict[str, Any]:
     return _set_item_tags("thread", normalized, tags)
 
 
-def report_tags_payload(project_path: str | None, relative_path: str | None) -> dict[str, Any]:
+def report_tags_payload(
+    project_path: str | None, relative_path: str | None
+) -> dict[str, Any]:
     project = _normalize_item_id(project_path)
     path = _normalize_report_path(relative_path)
     item_id = _report_item_id(project, path)
@@ -189,7 +191,9 @@ def _read_options(raw_options: Any) -> dict[str, dict[str, Any]]:
     return options
 
 
-def _read_assignments(raw_assignments: Any, kind: ItemKind) -> dict[str, dict[str, Any]]:
+def _read_assignments(
+    raw_assignments: Any, kind: ItemKind
+) -> dict[str, dict[str, Any]]:
     if not isinstance(raw_assignments, dict):
         return {}
     assignments: dict[str, dict[str, Any]] = {}

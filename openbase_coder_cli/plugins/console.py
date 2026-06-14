@@ -123,7 +123,9 @@ def _install_console_packages(console_dir: Path, registry: PluginRegistry) -> No
     )
 
 
-def sync_console_integration(registry: PluginRegistry, workspace_path: str | None) -> None:
+def sync_console_integration(
+    registry: PluginRegistry, workspace_path: str | None
+) -> None:
     payload = {
         "pages": [
             {

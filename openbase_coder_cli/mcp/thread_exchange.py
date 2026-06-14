@@ -99,7 +99,9 @@ def get_or_create_device_identity(
     return identity
 
 
-def read_device_identity(path: Path = DEFAULT_DEVICE_IDENTITY_PATH) -> DeviceIdentity | None:
+def read_device_identity(
+    path: Path = DEFAULT_DEVICE_IDENTITY_PATH,
+) -> DeviceIdentity | None:
     if not path.exists():
         return None
     try:
@@ -189,11 +191,15 @@ def export_thread_snapshots(
         rollout = _source_rollout_path(row, codex_home, thread_id)
         fingerprint = _fingerprint_from_rollout_path(rollout, row)
         if rollout is None or fingerprint is None:
-            results.append(ThreadSnapshotResult(thread_id, "skipped", "rollout_not_found"))
+            results.append(
+                ThreadSnapshotResult(thread_id, "skipped", "rollout_not_found")
+            )
             continue
         fingerprint_id = _fingerprint_id(fingerprint)
         thread_ledger = _ledger_thread(ledger, thread_id)
-        if fingerprint_id in _device_exported_fingerprints(thread_ledger, identity.device_id):
+        if fingerprint_id in _device_exported_fingerprints(
+            thread_ledger, identity.device_id
+        ):
             thread_ledger["local_fingerprint"] = fingerprint_id
             results.append(
                 ThreadSnapshotResult(
@@ -205,7 +211,9 @@ def export_thread_snapshots(
             )
             continue
 
-        parent_fingerprint = _parent_fingerprint_for_export(thread_ledger, fingerprint_id)
+        parent_fingerprint = _parent_fingerprint_for_export(
+            thread_ledger, fingerprint_id
+        )
         snapshot_path = _write_snapshot(
             exchange_dir=exchange_dir,
             identity=identity,
@@ -591,14 +599,18 @@ def _import_snapshot_into_home(
     _upsert_thread_row(
         state_db,
         thread_id,
-        metadata.get("thread_row") if isinstance(metadata.get("thread_row"), dict) else {},
+        metadata.get("thread_row")
+        if isinstance(metadata.get("thread_row"), dict)
+        else {},
         target_rollout,
         overwrite=overwrite,
     )
     _replace_thread_dynamic_tools(
         state_db,
         thread_id,
-        metadata.get("dynamic_tools") if isinstance(metadata.get("dynamic_tools"), list) else [],
+        metadata.get("dynamic_tools")
+        if isinstance(metadata.get("dynamic_tools"), list)
+        else [],
     )
     thread_row = metadata.get("thread_row")
     thread_row = thread_row if isinstance(thread_row, dict) else {}
@@ -643,7 +655,9 @@ def _replace_thread_dynamic_tools(
         if not _has_table(conn, "thread_dynamic_tools"):
             return
         columns = _table_columns(conn, "thread_dynamic_tools")
-        conn.execute("DELETE FROM thread_dynamic_tools WHERE thread_id = ?", (thread_id,))
+        conn.execute(
+            "DELETE FROM thread_dynamic_tools WHERE thread_id = ?", (thread_id,)
+        )
         for raw_row in rows:
             if not isinstance(raw_row, dict):
                 continue
@@ -724,7 +738,10 @@ def _import_decision(
         return "import"
     if parent_fingerprint and local_fingerprint == parent_fingerprint:
         return "import"
-    if thread_ledger.get("local_fingerprint") == parent_fingerprint and parent_fingerprint:
+    if (
+        thread_ledger.get("local_fingerprint") == parent_fingerprint
+        and parent_fingerprint
+    ):
         return "import"
     return "conflict"
 
@@ -766,7 +783,9 @@ def _write_exchange_ledger(path: Path, ledger: dict[str, Any]) -> None:
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, delete=False
+    ) as tmp:
         tmp.write(body)
         tmp_name = tmp.name
     os.replace(tmp_name, path)
@@ -779,7 +798,9 @@ def _ledger_thread(ledger: dict[str, Any], thread_id: str) -> dict[str, Any]:
     return thread
 
 
-def _device_exported_fingerprints(thread_ledger: dict[str, Any], device_id: str) -> set[str]:
+def _device_exported_fingerprints(
+    thread_ledger: dict[str, Any], device_id: str
+) -> set[str]:
     device = thread_ledger.get("devices", {}).get(device_id)
     snapshots = device.get("snapshots") if isinstance(device, dict) else None
     if not isinstance(snapshots, dict):

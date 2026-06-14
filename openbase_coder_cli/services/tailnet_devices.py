@@ -69,9 +69,7 @@ def tailnet_devices_payload() -> dict[str, Any]:
 
     if result.returncode != 0:
         detail = (
-            result.stderr.strip()
-            or result.stdout.strip()
-            or "tailscale status failed."
+            result.stderr.strip() or result.stdout.strip() or "tailscale status failed."
         )
         return {
             "tailscale_available": True,

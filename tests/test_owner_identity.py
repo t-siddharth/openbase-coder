@@ -85,9 +85,10 @@ def test_matching_subject_is_authorized(monkeypatch):
 def test_matching_email_is_authorized(monkeypatch):
     _patch_owner(monkeypatch, {"sub": "user-1", "email": "owner@example.com"})
     # Different sub format (e.g. auth/session fallback) but same email.
-    assert auth_module.is_owner_identity(
-        {"sub": "9", "email": "Owner@Example.com"}
-    ) is True
+    assert (
+        auth_module.is_owner_identity({"sub": "9", "email": "Owner@Example.com"})
+        is True
+    )
 
 
 def test_other_subject_is_rejected(monkeypatch):

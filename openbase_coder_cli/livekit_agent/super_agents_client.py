@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -49,6 +50,11 @@ def _super_agents_model_name(path: Path | None = None) -> str | None:
         or os.getenv(SUPER_AGENTS_MODEL_ENV, "").strip()
         or None
     )
+
+
+def _is_super_agents_mcp_server(name: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    return normalized in {"super-agents", "mcp-super-agents"}
 
 
 class SuperAgentsLiveKitClient:
@@ -101,6 +107,7 @@ class SuperAgentsLiveKitClient:
             self._dispatcher_config_path
         )
         self._backend_client = backend_client or self._client_from_environment()
+        self._register_backend_callback()
         self._thread_id = initial_thread_id or (
             self._load_thread_id() if persist_thread else None
         )
@@ -233,10 +240,15 @@ class SuperAgentsLiveKitClient:
         ):
             turn_input["developerInstructions"] = effective_developer_instructions
 
-        result = await self._backend_client.start_turn_by_label(
-            self._query(thread_id=thread_id),
-            turn_input,
-        )
+        if self._backend_is_codex() and hasattr(self._backend_client, "start_turn"):
+            result = await self._backend_client.start_turn(
+                {"threadId": thread_id, **turn_input}
+            )
+        else:
+            result = await self._backend_client.start_turn_by_label(
+                self._query(thread_id=thread_id),
+                turn_input,
+            )
         turn_id = _extract_turn_id(result)
         if not turn_id:
             raise RuntimeError("Super Agents did not return a turn id.")
@@ -407,10 +419,25 @@ class SuperAgentsLiveKitClient:
         return thread_id
 
     async def _resume_thread(self, thread_id: str) -> str:
-        resumed = await self._backend_client.resume_by_label(
-            self._query(thread_id=thread_id, prefer="latest_any")
-        )
+        if self._backend_is_codex() and hasattr(self._backend_client, "resume_thread"):
+            resumed = await self._backend_client.resume_thread(
+                thread_id,
+                label=self._super_agent_name or DEFAULT_DISPATCHER_LABEL,
+                agent_name=self._super_agent_agent_name,
+                developer_instructions=self._thread_developer_instructions(),
+            )
+        else:
+            resumed = await self._backend_client.resume_by_label(
+                self._query(thread_id=thread_id, prefer="latest_any")
+            )
         self._thread_id = _extract_thread_id(resumed) or thread_id
+        if self._thread_id != thread_id:
+            logger.warning(
+                "LiveKit Super Agents resume returned a different thread id; "
+                "requested_thread_id=%s resumed_thread_id=%s",
+                thread_id,
+                self._thread_id,
+            )
         self._thread_loaded = True
         self._persist_thread_id(self._thread_id)
         return self._thread_id
@@ -430,6 +457,48 @@ class SuperAgentsLiveKitClient:
         from super_agents.backend_clients import client_from_environment
 
         return client_from_environment()
+
+    def _register_backend_callback(self) -> None:
+        register = getattr(self._backend_client, "register_permission_callback", None)
+        if register is not None:
+            register(self._answer_backend_callback)
+
+    def _answer_backend_callback(self, request: Any) -> dict[str, Any] | None:
+        method = str(getattr(request, "method", "") or "")
+        params = getattr(request, "params", {}) or {}
+        if not isinstance(params, dict):
+            params = {}
+
+        if method == "mcpServer/elicitation/request":
+            server_name = str(
+                params.get("serverName") or params.get("server_name") or ""
+            )
+            action = (
+                "accept"
+                if self._approval_policy == "never"
+                and _is_super_agents_mcp_server(server_name)
+                else "decline"
+            )
+            logger.warning(
+                "Answering Super Agents backend MCP elicitation method=%s "
+                "server=%s action=%s",
+                method,
+                server_name,
+                action,
+            )
+            return {"action": action, "content": None, "_meta": None}
+
+        if "requestApproval" in method:
+            decision = "accept" if self._approval_policy == "never" else "decline"
+            logger.warning(
+                "Answering Super Agents backend approval callback method=%s "
+                "decision=%s",
+                method,
+                decision,
+            )
+            return {"decision": decision}
+
+        return None
 
     def _backend_is_codex(self) -> bool:
         return getattr(self._backend_client, "backend", "codex") == "codex"

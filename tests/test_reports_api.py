@@ -181,7 +181,10 @@ def test_all_project_reports_lists_recent_and_global_reports(
         (str(duplicate_global_project.resolve()), "duplicate.md"),
         (str(recent_project.resolve()), "recent.md"),
     }
-    assert all(item["id"] == f"{item['project']['path']}:{item['file']['path']}" for item in items)
+    assert all(
+        item["id"] == f"{item['project']['path']}:{item['file']['path']}"
+        for item in items
+    )
 
 
 def test_project_reports_file_delete_removes_report_inside_reports_dir(

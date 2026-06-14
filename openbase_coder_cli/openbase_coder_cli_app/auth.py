@@ -18,6 +18,7 @@ from openbase_coder_cli.config.token_manager import (
 
 logger = logging.getLogger(__name__)
 
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def auth_session(request):

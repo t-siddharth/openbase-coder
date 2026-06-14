@@ -17,7 +17,9 @@ _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _FENCE_RE = re.compile(r"^\s*(```+|~~~+)\s*([A-Za-z0-9_+.-]*)?.*$")
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
-_LIST_RE = re.compile(r"^(?P<indent>\s*)(?P<marker>(?:[-*+])|(?:\d+[.)]))\s+(?P<body>.*)$")
+_LIST_RE = re.compile(
+    r"^(?P<indent>\s*)(?P<marker>(?:[-*+])|(?:\d+[.)]))\s+(?P<body>.*)$"
+)
 _TASK_RE = re.compile(r"^\[(?P<state>[ xX])\]\s+(?P<body>.*)$")
 _ORDERED_RE = re.compile(r"^(\d+)[.)]$")
 _URL_RE = re.compile(r"https?://\S+")
@@ -187,7 +189,9 @@ def _parse_markdown_blocks(text: str, opts: SpeechFormatOptions) -> list[str]:
             flush_item()
             flush_paragraph()
             code_lines = 0
-            while index < len(lines) and (_is_indented_code(lines[index]) or not lines[index].strip()):
+            while index < len(lines) and (
+                _is_indented_code(lines[index]) or not lines[index].strip()
+            ):
                 if lines[index].strip():
                     code_lines += 1
                 index += 1
@@ -210,7 +214,9 @@ def _parse_markdown_blocks(text: str, opts: SpeechFormatOptions) -> list[str]:
             index += 1
             continue
 
-        if pending_item is not None and _is_list_continuation(line, pending_item.indent):
+        if pending_item is not None and _is_list_continuation(
+            line, pending_item.indent
+        ):
             pending_item.body = f"{pending_item.body} {line.strip()}"
             index += 1
             continue
@@ -279,7 +285,9 @@ def _is_table_start(lines: list[str], index: int) -> bool:
         return False
     header = lines[index]
     separator = lines[index + 1]
-    return "|" in header and bool(re.fullmatch(r"\s*\|?[\s:|-]+\|[\s:|-]+\|?\s*", separator))
+    return "|" in header and bool(
+        re.fullmatch(r"\s*\|?[\s:|-]+\|[\s:|-]+\|?\s*", separator)
+    )
 
 
 def _looks_like_non_speech_output(text: str) -> bool:
@@ -302,7 +310,13 @@ def _looks_like_non_speech_output(text: str) -> bool:
     lines = [line for line in text.splitlines() if line.strip()]
     if len(lines) >= 3:
         stack_lines = sum(
-            bool(re.search(r'^\s*(file ".+", line \d+|at\s+\S+\(|caused by:|[-+]{3}\s|@@\s)', line, re.I))
+            bool(
+                re.search(
+                    r'^\s*(file ".+", line \d+|at\s+\S+\(|caused by:|[-+]{3}\s|@@\s)',
+                    line,
+                    re.I,
+                )
+            )
             for line in lines
         )
         if stack_lines / len(lines) >= 0.35:
@@ -329,7 +343,9 @@ def _humanize_inline(text: str) -> str:
         text,
     )
     text = _replace_acronyms(text, replacements)
-    text = re.sub(r"\b([A-Z]{2,6})\b", lambda match: _spell_letters(match.group(1)), text)
+    text = re.sub(
+        r"\b([A-Z]{2,6})\b", lambda match: _spell_letters(match.group(1)), text
+    )
     text = re.sub(r"\(\)", "", text)
     text = text.replace("\\", " backslash ")
     return text
@@ -344,7 +360,9 @@ def _replace_code_omission_narration(text: str) -> str:
     return text
 
 
-def _split_identifier(identifier: str, replacements: TTSReplacements | None = None) -> str:
+def _split_identifier(
+    identifier: str, replacements: TTSReplacements | None = None
+) -> str:
     replacements = replacements or current_tts_replacements()
     if identifier in EXTENSION_SPEECH:
         return EXTENSION_SPEECH[identifier]
@@ -369,7 +387,11 @@ def _speak_path(path: str) -> str:
     if not normalized:
         return trailing
 
-    parts = [part for part in normalized.replace("\\", "/").split("/") if part and part != "."]
+    parts = [
+        part
+        for part in normalized.replace("\\", "/").split("/")
+        if part and part != "."
+    ]
     if not parts:
         return trailing
 

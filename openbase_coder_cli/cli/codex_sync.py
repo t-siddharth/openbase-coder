@@ -52,7 +52,9 @@ def _format_counts(counts: Counter[str]) -> str:
     return ",".join(f"{key}:{counts[key]}" for key in sorted(counts))
 
 
-def _snapshot_result_summary(results: list[ThreadSnapshotResult]) -> dict[str, str | int]:
+def _snapshot_result_summary(
+    results: list[ThreadSnapshotResult],
+) -> dict[str, str | int]:
     statuses = Counter(result.status for result in results)
     reasons = Counter(f"{result.status}:{result.reason}" for result in results)
     return {

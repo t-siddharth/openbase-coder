@@ -18,13 +18,33 @@ def claude_chrome() -> None:
 @claude_chrome.command("start")
 @click.argument("instructions", nargs=-1, required=True)
 @click.option("--room", "room_name", default="", help="Explicit LiveKit room name.")
-@click.option("--url", "target_url", default="about:blank", show_default=True, help="Initial Chrome URL to share.")
-@click.option("--command", default="claude", show_default=True, help="Claude executable or command name.")
-@click.option("--cwd", default=".", show_default=True, help="Working directory for the Claude command.")
-@click.option("--max-turns", type=int, default=None, help="Optional Claude --max-turns value.")
+@click.option(
+    "--url",
+    "target_url",
+    default="about:blank",
+    show_default=True,
+    help="Initial Chrome URL to share.",
+)
+@click.option(
+    "--command",
+    default="claude",
+    show_default=True,
+    help="Claude executable or command name.",
+)
+@click.option(
+    "--cwd",
+    default=".",
+    show_default=True,
+    help="Working directory for the Claude command.",
+)
+@click.option(
+    "--max-turns", type=int, default=None, help="Optional Claude --max-turns value."
+)
 @click.option(
     "--permission-mode",
-    type=click.Choice(["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"]),
+    type=click.Choice(
+        ["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"]
+    ),
     default="default",
     show_default=True,
 )
@@ -34,7 +54,11 @@ def claude_chrome() -> None:
     multiple=True,
     help="Allowed Claude tool. Can be repeated.",
 )
-@click.option("--chrome-profile-directory", default="", help="Chrome profile directory when using the default user data dir.")
+@click.option(
+    "--chrome-profile-directory",
+    default="",
+    help="Chrome profile directory when using the default user data dir.",
+)
 @click.option(
     "--isolated-profile",
     is_flag=True,
@@ -106,7 +130,9 @@ def steer(instructions: tuple[str, ...]) -> None:
         raise click.ClickException("Steering instructions are required.")
 
     response = CompanionClient().steer_claude_chrome(text)
-    click.echo(f"Claude Chrome steering submitted ({response.get('state') or 'chrome-controlling'}).")
+    click.echo(
+        f"Claude Chrome steering submitted ({response.get('state') or 'chrome-controlling'})."
+    )
 
 
 @claude_chrome.command("queue")
@@ -118,7 +144,9 @@ def queue(instructions: tuple[str, ...]) -> None:
         raise click.ClickException("Queued Claude Chrome instructions are required.")
 
     response = CompanionClient().queue_claude_chrome(text)
-    click.echo(f"Claude Chrome instruction queued ({response.get('state') or 'chrome-controlling'}).")
+    click.echo(
+        f"Claude Chrome instruction queued ({response.get('state') or 'chrome-controlling'})."
+    )
 
 
 @claude_chrome.command("abort")

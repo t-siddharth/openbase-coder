@@ -168,7 +168,9 @@ def test_export_thread_snapshot_writes_metadata_and_rollout(tmp_path: Path) -> N
     home = tmp_path / "home"
     exchange_dir = tmp_path / "exchange"
     _create_state_db(home / "state_5.sqlite")
-    source_rollout = _insert_thread(home, "thread-1", title="Thread title", updated_at=20)
+    source_rollout = _insert_thread(
+        home, "thread-1", title="Thread title", updated_at=20
+    )
     _append_index(home, "thread-1", "Indexed title")
     _append_dynamic_tool(home, "thread-1", "example_tool")
 
@@ -233,9 +235,9 @@ def test_import_snapshot_creates_local_thread_state(tmp_path: Path) -> None:
     assert row[0] == "Thread title"
     assert Path(row[1]).exists()
     assert tool_row == ("example_tool",)
-    index_lines = (target_home / "session_index.jsonl").read_text(
-        encoding="utf-8"
-    ).splitlines()
+    index_lines = (
+        (target_home / "session_index.jsonl").read_text(encoding="utf-8").splitlines()
+    )
     assert json.loads(index_lines[-1])["thread_name"] == "Indexed title"
 
 

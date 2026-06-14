@@ -7,8 +7,12 @@ from openbase_coder_cli import livekit_start_announcer
 
 def test_announce_super_agent_start_uses_explicit_agent_name(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENBASE_CODER_CLI_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(livekit_start_announcer, "_has_livekit_voice_route", lambda: True)
-    monkeypatch.setattr(livekit_start_announcer, "_announcement_commands", lambda: [("openbase-coder",)])
+    monkeypatch.setattr(
+        livekit_start_announcer, "_has_livekit_voice_route", lambda: True
+    )
+    monkeypatch.setattr(
+        livekit_start_announcer, "_announcement_commands", lambda: [("openbase-coder",)]
+    )
 
     recorded = []
     calls = []
@@ -24,7 +28,9 @@ def test_announce_super_agent_start_uses_explicit_agent_name(monkeypatch, tmp_pa
         calls.append((args, kwargs))
         return FakeProcess()
 
-    monkeypatch.setattr(livekit_start_announcer, "_record_announcement_voice", fake_record)
+    monkeypatch.setattr(
+        livekit_start_announcer, "_record_announcement_voice", fake_record
+    )
     monkeypatch.setattr(
         livekit_start_announcer.asyncio,
         "create_subprocess_exec",
@@ -51,7 +57,9 @@ def test_announce_super_agent_start_omits_announcement_without_agent_name(
     tmp_path,
 ):
     monkeypatch.setenv("OPENBASE_CODER_CLI_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(livekit_start_announcer, "_has_livekit_voice_route", lambda: True)
+    monkeypatch.setattr(
+        livekit_start_announcer, "_has_livekit_voice_route", lambda: True
+    )
 
     announced = asyncio.run(
         livekit_start_announcer.announce_super_agent_start(

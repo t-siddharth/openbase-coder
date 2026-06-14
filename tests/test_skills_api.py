@@ -139,7 +139,9 @@ def test_skills_symlink_rejects_existing_non_link_target(tmp_path: Path, monkeyp
     assert not (openbase_home / "skills" / "shared-skill").is_symlink()
 
 
-def test_skill_delete_unlinks_symlink_without_deleting_source(tmp_path: Path, monkeypatch):
+def test_skill_delete_unlinks_symlink_without_deleting_source(
+    tmp_path: Path, monkeypatch
+):
     normal_home = tmp_path / "normal-codex"
     openbase_home = tmp_path / "openbase-codex"
     source_dir = _write_skill(normal_home, "shared-skill")

@@ -36,7 +36,7 @@ DEBUG = os.environ.get("OPENBASE_CODER_CLI_DEBUG", "false").lower() == "true"
 ALLOWED_HOSTS = [
     host.strip()
     for host in os.environ.get(
-    "OPENBASE_CODER_CLI_ALLOWED_HOSTS", "localhost,127.0.0.1"
+        "OPENBASE_CODER_CLI_ALLOWED_HOSTS", "localhost,127.0.0.1"
     ).split(",")
     if host.strip()
 ]
@@ -48,7 +48,8 @@ WEB_BACKEND_URL = os.environ.get(
     "OPENBASE_CODER_CLI_WEB_BACKEND_URL", "https://app.openbase.cloud"
 )
 JWT_JWKS_URL = os.environ.get(
-    "OPENBASE_CODER_CLI_JWT_JWKS_URL", f"{WEB_BACKEND_URL.rstrip('/')}/.well-known/jwks.json"
+    "OPENBASE_CODER_CLI_JWT_JWKS_URL",
+    f"{WEB_BACKEND_URL.rstrip('/')}/.well-known/jwks.json",
 )
 JWT_AUTH_SESSION_URL = os.environ.get(
     "OPENBASE_CODER_CLI_JWT_AUTH_SESSION_URL",

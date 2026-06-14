@@ -150,10 +150,14 @@ def _include_livekit_fallback_thread(manager, threads: list) -> list:
     return sorted([*threads, livekit_thread], key=_thread_sort_value, reverse=True)
 
 
-def _favorite_thread_list_response(request, manager, *, page: int, page_size: int, favorite: bool):
+def _favorite_thread_list_response(
+    request, manager, *, page: int, page_size: int, favorite: bool
+):
     threads = _include_livekit_fallback_thread(manager, get_cached_thread_list(manager))
     filtered_threads = [
-        thread for thread in threads if is_thread_favorite(thread.session_id) is favorite
+        thread
+        for thread in threads
+        if is_thread_favorite(thread.session_id) is favorite
     ]
     _refresh_projects_from_threads([thread.directory for thread in filtered_threads])
     count = len(filtered_threads)

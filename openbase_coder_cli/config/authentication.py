@@ -17,9 +17,10 @@ logger = logging.getLogger(__name__)
 
 def _allow_any_subject() -> bool:
     """Whether the single-owner identity check is disabled (opt-in)."""
-    return os.environ.get(
-        "OPENBASE_CODER_CLI_ALLOW_ANY_SUBJECT", "false"
-    ).strip().lower() == "true"
+    return (
+        os.environ.get("OPENBASE_CODER_CLI_ALLOW_ANY_SUBJECT", "false").strip().lower()
+        == "true"
+    )
 
 
 def is_owner_identity(claims: dict) -> bool:
@@ -73,6 +74,7 @@ def get_token_manager_owner() -> dict:
 
     return get_token_manager().get_owner_identity()
 
+
 _validator: JWKSValidator | None = None
 
 
@@ -101,7 +103,9 @@ def _validate_via_auth_session(token: str) -> dict:
         raise InvalidTokenError("WEB_BACKEND_URL is not configured")
 
     session_url = getattr(
-        settings, "JWT_AUTH_SESSION_URL", f"{web_backend_url}/_allauth/app/v1/auth/session"
+        settings,
+        "JWT_AUTH_SESSION_URL",
+        f"{web_backend_url}/_allauth/app/v1/auth/session",
     )
     try:
         resp = httpx.get(
@@ -200,7 +204,9 @@ class JWTAuthentication(authentication.BaseAuthentication):
         try:
             claims = validator.validate(token)
         except InvalidTokenError as exc:
-            logger.info("Local JWT validation failed; trying auth/session fallback: %s", exc)
+            logger.info(
+                "Local JWT validation failed; trying auth/session fallback: %s", exc
+            )
             try:
                 claims = _validate_via_auth_session(token)
             except InvalidTokenError:

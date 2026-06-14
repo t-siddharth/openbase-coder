@@ -159,8 +159,7 @@ def logs(name: str) -> None:
     legacy_stderr_log = DEFAULT_LOG_DIR / f"{svc.name}.stderr.log"
 
     if not any(
-        path.exists()
-        for path in (combined_log, legacy_stdout_log, legacy_stderr_log)
+        path.exists() for path in (combined_log, legacy_stdout_log, legacy_stderr_log)
     ):
         raise click.ClickException(f"No log files found for {svc.name}")
 

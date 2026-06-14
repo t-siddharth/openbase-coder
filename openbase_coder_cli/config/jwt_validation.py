@@ -43,7 +43,9 @@ class JWKSValidator:
         }
 
     def _load_jwks_payload(self, jwks_data: object) -> None:
-        if not isinstance(jwks_data, dict) or not isinstance(jwks_data.get("keys"), list):
+        if not isinstance(jwks_data, dict) or not isinstance(
+            jwks_data.get("keys"), list
+        ):
             raise jwt.InvalidTokenError(
                 f"JWKS endpoint returned invalid payload: {self._jwks_url}"
             )

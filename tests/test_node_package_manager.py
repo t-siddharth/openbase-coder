@@ -5,7 +5,9 @@ from pathlib import Path
 from openbase_coder_cli.cli import node
 
 
-def test_run_workspace_package_command_prefers_pnpm_workspace(monkeypatch, tmp_path: Path):
+def test_run_workspace_package_command_prefers_pnpm_workspace(
+    monkeypatch, tmp_path: Path
+):
     workspace_dir = tmp_path / "workspace"
     package_dir = workspace_dir / "console"
     package_dir.mkdir(parents=True)
@@ -25,7 +27,10 @@ def test_run_workspace_package_command_prefers_pnpm_workspace(monkeypatch, tmp_p
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
 
-    assert node.run_workspace_package_command(workspace_dir, package_dir, "install") is True
+    assert (
+        node.run_workspace_package_command(workspace_dir, package_dir, "install")
+        is True
+    )
 
     assert calls[0][0][0] == [
         "/bin/pnpm",
@@ -58,7 +63,10 @@ def test_run_workspace_package_command_uses_npm_for_standalone_package(
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
 
-    assert node.run_workspace_package_command(workspace_dir, package_dir, "run", "build") is True
+    assert (
+        node.run_workspace_package_command(workspace_dir, package_dir, "run", "build")
+        is True
+    )
 
     assert calls[0][0][0] == ["/bin/npm", "run", "build"]
 
@@ -88,7 +96,10 @@ def test_run_workspace_package_command_finds_pnpm_home_when_not_on_path(
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
 
-    assert node.run_workspace_package_command(workspace_dir, package_dir, "install") is True
+    assert (
+        node.run_workspace_package_command(workspace_dir, package_dir, "install")
+        is True
+    )
 
     assert calls[0][0][0] == [
         str(pnpm_bin),
@@ -120,6 +131,9 @@ def test_run_workspace_package_command_allows_pnpm_install_without_lockfile(
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
 
-    assert node.run_workspace_package_command(workspace_dir, package_dir, "install") is True
+    assert (
+        node.run_workspace_package_command(workspace_dir, package_dir, "install")
+        is True
+    )
 
     assert calls[0][0][0] == ["/bin/pnpm", "install"]

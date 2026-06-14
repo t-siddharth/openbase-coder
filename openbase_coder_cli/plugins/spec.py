@@ -79,7 +79,9 @@ def normalize_capabilities(raw_spec: dict, plugin_id: str) -> PluginCapabilities
         description = str(item.get("description", "")).strip()
         stack = str(item.get("stack", "")).strip()
         bootstrappers.append(
-            BootstrapperSpec(name=name, handler=handler, description=description, stack=stack)
+            BootstrapperSpec(
+                name=name, handler=handler, description=description, stack=stack
+            )
         )
 
     stacks: list[StackSpec] = []
@@ -87,7 +89,9 @@ def normalize_capabilities(raw_spec: dict, plugin_id: str) -> PluginCapabilities
         if not isinstance(item, dict):
             raise click.ClickException("stack entries must be objects")
         name = _as_string(item.get("name", ""), field_name="stack.name")
-        stacks.append(StackSpec(name=name, description=str(item.get("description", "")).strip()))
+        stacks.append(
+            StackSpec(name=name, description=str(item.get("description", "")).strip())
+        )
 
     console_pages: list[ConsolePageSpec] = []
     for item in cap_root.get("console_pages", []):
@@ -103,7 +107,8 @@ def normalize_capabilities(raw_spec: dict, plugin_id: str) -> PluginCapabilities
                 f"console page '{key}' route must start with '/dashboard'"
             )
         import_module = _as_string(
-            item.get("import_module", ""), field_name=f"console_page[{key}].import_module"
+            item.get("import_module", ""),
+            field_name=f"console_page[{key}].import_module",
         )
         export_name = str(item.get("export", "default")).strip() or "default"
         sidebar = bool(item.get("sidebar", True))
@@ -152,7 +157,9 @@ def normalize_capabilities(raw_spec: dict, plugin_id: str) -> PluginCapabilities
 
     console_npm_packages: list[str] = []
     for entry in cap_root.get("console_npm_packages", []):
-        console_npm_packages.append(_as_string(entry, field_name="console_npm_packages[]"))
+        console_npm_packages.append(
+            _as_string(entry, field_name="console_npm_packages[]")
+        )
 
     return PluginCapabilities(
         bootstrappers=bootstrappers,

@@ -75,9 +75,7 @@ def test_rejected_refresh_raises_login_required(manager, auth_path):
 
 def test_network_error_raises_transient(manager, auth_path):
     write_auth(auth_path, access="stale", expires_at=0)
-    with mock.patch.object(
-        httpx, "post", side_effect=httpx.ConnectError("boom")
-    ):
+    with mock.patch.object(httpx, "post", side_effect=httpx.ConnectError("boom")):
         with pytest.raises(AuthTransientError):
             manager.get_access_token()
 
@@ -108,16 +106,12 @@ def test_concurrent_refresh_only_hits_backend_once(manager, auth_path):
 
     def fake_post(url, **kwargs):
         calls.append(kwargs["json"]["refresh_token"])
-        return refresh_response(
-            access=f"at-{len(calls)}", refresh=f"rt-{len(calls)}"
-        )
+        return refresh_response(access=f"at-{len(calls)}", refresh=f"rt-{len(calls)}")
 
     results = []
     with mock.patch.object(httpx, "post", side_effect=fake_post):
         threads = [
-            threading.Thread(
-                target=lambda: results.append(manager.get_access_token())
-            )
+            threading.Thread(target=lambda: results.append(manager.get_access_token()))
             for _ in range(8)
         ]
         for thread in threads:

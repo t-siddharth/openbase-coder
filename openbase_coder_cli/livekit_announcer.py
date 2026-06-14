@@ -238,7 +238,10 @@ async def _resolve_target_room(
             livekit_api.ListParticipantsRequest(room=room.name)
         )
         agent_identities = _active_agent_identities(participant_response.participants)
-        has_user = any(_is_active_standard_participant(p) for p in participant_response.participants)
+        has_user = any(
+            _is_active_standard_participant(p)
+            for p in participant_response.participants
+        )
         if agent_identities and has_user:
             return _TargetRoom(
                 room_name=room.name,
@@ -275,9 +278,10 @@ def _is_active_agent_participant(participant) -> bool:
 
 
 def _is_active_standard_participant(participant) -> bool:
-    return (
-        int(getattr(participant, "kind", -1)) == livekit_api.ParticipantInfo.Kind.STANDARD
-        and _is_connected_participant(participant)
+    return int(
+        getattr(participant, "kind", -1)
+    ) == livekit_api.ParticipantInfo.Kind.STANDARD and _is_connected_participant(
+        participant
     )
 
 

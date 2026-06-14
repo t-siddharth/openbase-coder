@@ -920,7 +920,10 @@ def test_recreated_dispatcher_resets_route_until_replacement_warms(
     replacement_state = get_livekit_voice_route_state()
 
     assert thread_id == "dispatcher-2"
-    assert json.loads(state_path.read_text(encoding="utf-8"))["dispatcher_thread_id"] == "dispatcher-2"
+    assert (
+        json.loads(state_path.read_text(encoding="utf-8"))["dispatcher_thread_id"]
+        == "dispatcher-2"
+    )
     assert replacement_state.dispatcher_thread_id == "dispatcher-2"
     assert replacement_state.active_route == "dispatcher"
     assert replacement_state.active_target_thread_id is None

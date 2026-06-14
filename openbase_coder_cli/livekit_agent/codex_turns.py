@@ -62,7 +62,9 @@ def _with_super_agent_identity_instructions(
         return developer_instructions
     identity_lines: list[str] = []
     if normalized_name:
-        identity_lines.append(f"{SUPER_AGENT_IDENTITY_INSTRUCTION_PREFIX} {normalized_name}")
+        identity_lines.append(
+            f"{SUPER_AGENT_IDENTITY_INSTRUCTION_PREFIX} {normalized_name}"
+        )
     if normalized_agent_name:
         identity_lines.append(
             f"{SUPER_AGENT_AGENT_NAME_INSTRUCTION_PREFIX}{normalized_agent_name}."

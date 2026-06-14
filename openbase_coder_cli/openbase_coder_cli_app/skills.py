@@ -73,7 +73,11 @@ def _skill_file(skills_root: Path, skill_name: str) -> Path:
 
 
 def _skill_payload(skill_file: Path, skill_name: str) -> dict[str, str]:
-    payload = {"path": str(skill_file), "name": skill_name, "dir_path": str(skill_file.parent)}
+    payload = {
+        "path": str(skill_file),
+        "name": skill_name,
+        "dir_path": str(skill_file.parent),
+    }
     if skill_file.parent.is_symlink():
         payload["source_dir_path"] = str(skill_file.parent.resolve())
     if skill_file.parent.is_symlink() or skill_file.is_symlink():
@@ -108,7 +112,9 @@ def _symlink_skill_between_scopes(
 
     source_link_target = source_dir
     if target_dir.exists() or target_dir.is_symlink():
-        if target_dir.is_symlink() and _same_resolved_path(target_dir, source_link_target):
+        if target_dir.is_symlink() and _same_resolved_path(
+            target_dir, source_link_target
+        ):
             return {
                 "name": skill_name,
                 "created": False,

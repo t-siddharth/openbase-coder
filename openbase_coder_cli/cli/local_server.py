@@ -44,7 +44,10 @@ def response_error(response: httpx.Response) -> str:
     try:
         payload = response.json()
     except ValueError:
-        return response.text.strip() or f"Request failed with status {response.status_code}."
+        return (
+            response.text.strip()
+            or f"Request failed with status {response.status_code}."
+        )
 
     if isinstance(payload, dict):
         detail = payload.get("detail") or payload.get("error")

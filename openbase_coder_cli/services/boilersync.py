@@ -24,8 +24,12 @@ def boilersync_templates_payload(template_ref: str | None = None) -> dict[str, A
             "error": "boilersync was not found on PATH.",
         }
 
-    sources_result = run_boilersync_json(boilersync_bin, "templates", "sources", "--json")
-    templates_result = run_boilersync_json(boilersync_bin, "templates", "list", "--json")
+    sources_result = run_boilersync_json(
+        boilersync_bin, "templates", "sources", "--json"
+    )
+    templates_result = run_boilersync_json(
+        boilersync_bin, "templates", "list", "--json"
+    )
     details_result = None
     if template_ref:
         details_result = run_boilersync_json(

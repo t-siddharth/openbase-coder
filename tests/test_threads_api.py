@@ -185,7 +185,10 @@ def test_thread_list_filters_favorites_without_changing_default_order(
     ]
     assert favorite_response.status_code == 200
     assert favorite_response.data["count"] == 2
-    assert favorite_response.data["next"] == "/api/threads/?favorite=true&page_size=1&page=2"
+    assert (
+        favorite_response.data["next"]
+        == "/api/threads/?favorite=true&page_size=1&page=2"
+    )
     assert [thread["thread_id"] for thread in favorite_response.data["threads"]] == [
         "thread-002"
     ]

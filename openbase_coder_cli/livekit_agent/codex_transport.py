@@ -49,7 +49,9 @@ class CodexTransportMixin:
                 try:
                     message = json.loads(raw_message)
                 except json.JSONDecodeError:
-                    logger.warning("Ignoring non-JSON Codex app-server message: %s", raw_message)
+                    logger.warning(
+                        "Ignoring non-JSON Codex app-server message: %s", raw_message
+                    )
                     continue
 
                 request_id = message.get("id")
@@ -176,8 +178,12 @@ class CodexTransportMixin:
             await self._send_response(request_id, {"decision": decision})
             return
 
-        logger.warning("Rejecting unsupported Codex app-server request method=%s", method)
-        await self._send_error_response(request_id, -32601, f"method not found: {method}")
+        logger.warning(
+            "Rejecting unsupported Codex app-server request method=%s", method
+        )
+        await self._send_error_response(
+            request_id, -32601, f"method not found: {method}"
+        )
 
     def _record_agent_message(self, turn_id: str, text: str) -> None:
         active_turn = self._active_turn
@@ -249,7 +255,9 @@ class CodexTransportMixin:
             active_turn.completed.set_exception(exc)
         self._active_turn = None
 
-    async def _send_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def _send_request(
+        self, method: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
         async with self._state_lock:
             await self._ensure_connected_locked()
             return await self._send_request_locked(method, params)
@@ -261,7 +269,9 @@ class CodexTransportMixin:
     ) -> dict[str, Any]:
         assert self._ws is not None
 
-        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        future: asyncio.Future[dict[str, Any]] = (
+            asyncio.get_running_loop().create_future()
+        )
         async with self._send_lock:
             self._request_id += 1
             request_id = self._request_id
@@ -278,7 +288,9 @@ class CodexTransportMixin:
 
         return await future
 
-    async def _send_notification_locked(self, method: str, params: dict[str, Any]) -> None:
+    async def _send_notification_locked(
+        self, method: str, params: dict[str, Any]
+    ) -> None:
         assert self._ws is not None
         async with self._send_lock:
             await self._ws.send(json.dumps({"method": method, "params": params}))
@@ -288,7 +300,9 @@ class CodexTransportMixin:
         async with self._send_lock:
             await self._ws.send(json.dumps({"id": request_id, "result": result}))
 
-    async def _send_error_response(self, request_id: Any, code: int, message: str) -> None:
+    async def _send_error_response(
+        self, request_id: Any, code: int, message: str
+    ) -> None:
         assert self._ws is not None
         async with self._send_lock:
             await self._ws.send(

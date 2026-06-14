@@ -23,6 +23,7 @@ from openbase_coder_cli.paths import (
 
 logger = logging.getLogger(__name__)
 
+
 class AgentsMdSerializer(serializers.Serializer):
     content = serializers.CharField(allow_blank=True, trim_whitespace=False)
     target = serializers.ChoiceField(

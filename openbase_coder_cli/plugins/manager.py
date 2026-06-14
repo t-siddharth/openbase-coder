@@ -126,7 +126,9 @@ def _build_record(
     else:
         requirement = install_github_pinned(resolved.github_url, resolved.commit_sha)
 
-    raw_spec, installed_entrypoint_value = load_plugin_spec(package_name, entrypoint_name)
+    raw_spec, installed_entrypoint_value = load_plugin_spec(
+        package_name, entrypoint_name
+    )
     plugin_id, display_name, version = normalize_plugin_header(raw_spec)
     capabilities = normalize_capabilities(raw_spec, plugin_id)
 
@@ -193,7 +195,9 @@ def remove_plugin(plugin_id: str) -> None:
     if not plugin:
         raise click.ClickException(f"Plugin '{plugin_id}' is not installed")
 
-    registry.plugins = [item for item in registry.plugins if item.plugin_id != plugin_id]
+    registry.plugins = [
+        item for item in registry.plugins if item.plugin_id != plugin_id
+    ]
     save_registry(registry)
     write_requirements_file(registry)
 
@@ -235,14 +239,18 @@ def update_plugin(plugin_id: str | None, ref: str | None) -> list[PluginRecord]:
         if collisions:
             uninstall_package(record.package_name)
             joined = "\n".join(f"- {item}" for item in collisions)
-            raise click.ClickException(f"Plugin update blocked by collisions:\n{joined}")
+            raise click.ClickException(
+                f"Plugin update blocked by collisions:\n{joined}"
+            )
 
         if current.package_name != record.package_name:
             uninstall_package(current.package_name)
         next_plugins.append(record)
         updated.append(record)
 
-    new_registry = PluginRegistry(plugins=sorted(next_plugins, key=lambda item: item.plugin_id))
+    new_registry = PluginRegistry(
+        plugins=sorted(next_plugins, key=lambda item: item.plugin_id)
+    )
     save_registry(new_registry)
     write_requirements_file(new_registry)
 

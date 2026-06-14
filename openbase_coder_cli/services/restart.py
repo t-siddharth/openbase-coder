@@ -55,7 +55,9 @@ def build_restart_plan(request: RestartRequest) -> RestartPlan:
     unknown = [target for target in requested_targets if target not in valid_targets]
     if unknown:
         valid = ", ".join(restart_target_names())
-        raise click.ClickException(f"Unknown restart target '{unknown[0]}'. Valid: {valid}")
+        raise click.ClickException(
+            f"Unknown restart target '{unknown[0]}'. Valid: {valid}"
+        )
 
     services: list[str] = []
     for target in requested_targets:

@@ -41,7 +41,9 @@ def _validate_ws_via_auth_session(token: str) -> bool:
         return False
 
     session_url = getattr(
-        settings, "JWT_AUTH_SESSION_URL", f"{web_backend_url}/_allauth/app/v1/auth/session"
+        settings,
+        "JWT_AUTH_SESSION_URL",
+        f"{web_backend_url}/_allauth/app/v1/auth/session",
     )
     try:
         resp = httpx.get(
@@ -73,7 +75,9 @@ async def _validate_ws_via_auth_session_async(token: str) -> bool:
         return False
 
     session_url = getattr(
-        settings, "JWT_AUTH_SESSION_URL", f"{web_backend_url}/_allauth/app/v1/auth/session"
+        settings,
+        "JWT_AUTH_SESSION_URL",
+        f"{web_backend_url}/_allauth/app/v1/auth/session",
     )
     try:
         async with httpx.AsyncClient() as client:

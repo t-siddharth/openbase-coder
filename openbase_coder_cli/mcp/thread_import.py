@@ -276,8 +276,12 @@ def sync_codex_threads_once(
 
     active_ids = set(active_thread_ids or set()) | _active_super_agent_thread_ids()
     ledger = _read_sync_ledger(ledger_path)
-    normal_rows = {row["id"]: row for row in _thread_rows(normal_db) if _string(row.get("id"))}
-    voice_rows = {row["id"]: row for row in _thread_rows(voice_db) if _string(row.get("id"))}
+    normal_rows = {
+        row["id"]: row for row in _thread_rows(normal_db) if _string(row.get("id"))
+    }
+    voice_rows = {
+        row["id"]: row for row in _thread_rows(voice_db) if _string(row.get("id"))
+    }
     cutoff_ms = _sync_cutoff_ms(max_age_days)
 
     results: list[CodexThreadSyncResult] = []
@@ -285,8 +289,13 @@ def sync_codex_threads_once(
         normal_row = normal_rows.get(thread_id)
         voice_row = voice_rows.get(thread_id)
         try:
-            if cutoff_ms is not None and _thread_latest_updated_ms(normal_row, voice_row) < cutoff_ms:
-                result = CodexThreadSyncResult(thread_id, "skipped", None, "skipped_old")
+            if (
+                cutoff_ms is not None
+                and _thread_latest_updated_ms(normal_row, voice_row) < cutoff_ms
+            ):
+                result = CodexThreadSyncResult(
+                    thread_id, "skipped", None, "skipped_old"
+                )
             else:
                 result = _sync_one_thread(
                     thread_id,
@@ -427,7 +436,9 @@ def _sync_one_thread(
         return CodexThreadSyncResult(thread_id, "conflict", None, "both_homes_changed")
     if normal_changed:
         if not _target_row_safe_for_overwrite(voice_row, voice_home, thread_id):
-            return CodexThreadSyncResult(thread_id, "skipped", "normal_to_voice", "target_active")
+            return CodexThreadSyncResult(
+                thread_id, "skipped", "normal_to_voice", "target_active"
+            )
         return _sync_direction(
             thread_id,
             source_row=normal_row,
@@ -444,7 +455,9 @@ def _sync_one_thread(
         )
     if voice_changed:
         if not _target_row_safe_for_overwrite(normal_row, normal_home, thread_id):
-            return CodexThreadSyncResult(thread_id, "skipped", "voice_to_normal", "target_active")
+            return CodexThreadSyncResult(
+                thread_id, "skipped", "voice_to_normal", "target_active"
+            )
         return _sync_direction(
             thread_id,
             source_row=voice_row,
@@ -484,7 +497,9 @@ def _sync_direction(
         stability_delay_seconds=stability_delay_seconds,
     )
     if not source_safety.safe:
-        return CodexThreadSyncResult(thread_id, "skipped", direction, source_safety.reason)
+        return CodexThreadSyncResult(
+            thread_id, "skipped", direction, source_safety.reason
+        )
 
     transfer = _transfer_one_thread(
         thread_id,
@@ -795,7 +810,9 @@ def _read_sync_ledger(path: Path) -> dict[str, Any]:
 def _write_sync_ledger(path: Path, ledger: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"threads": ledger}, indent=2, sort_keys=True) + "\n"
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, delete=False
+    ) as tmp:
         tmp.write(payload)
         tmp_name = tmp.name
     os.replace(tmp_name, path)
@@ -819,7 +836,9 @@ def _active_super_agent_thread_ids(
             continue
         status = value.get("lastStatus")
         active_turn = value.get("activeTurnId")
-        thread_id = _string(value.get("threadId")) or (key if isinstance(key, str) else None)
+        thread_id = _string(value.get("threadId")) or (
+            key if isinstance(key, str) else None
+        )
         if thread_id and status in {"running", "waiting"} and active_turn:
             active.add(thread_id)
     return active
@@ -906,7 +925,10 @@ def _copy_thread_state_row(
     overrides: dict[str, Any] | None = None,
     overwrite: bool,
 ) -> None:
-    with _managed_connect(source_db) as source_conn, _managed_connect(target_db) as target_conn:
+    with (
+        _managed_connect(source_db) as source_conn,
+        _managed_connect(target_db) as target_conn,
+    ):
         source_conn.row_factory = sqlite3.Row
         target_conn.row_factory = sqlite3.Row
         source_columns = _table_columns(source_conn, table)
@@ -936,7 +958,10 @@ def _copy_thread_dynamic_tools(
     *,
     overwrite: bool,
 ) -> None:
-    with _managed_connect(source_db) as source_conn, _managed_connect(target_db) as target_conn:
+    with (
+        _managed_connect(source_db) as source_conn,
+        _managed_connect(target_db) as target_conn,
+    ):
         source_conn.row_factory = sqlite3.Row
         target_conn.row_factory = sqlite3.Row
         if not _has_table(source_conn, "thread_dynamic_tools") or not _has_table(
@@ -1023,11 +1048,15 @@ def _append_session_index_entry(
     if thread_id in target_entries and not overwrite:
         return
     source_entry = _latest_session_index_entries(source_index).get(thread_id)
-    entry = dict(source_entry) if source_entry else {
-        "id": thread_id,
-        "thread_name": fallback_title,
-        "updated_at": fallback_updated_at,
-    }
+    entry = (
+        dict(source_entry)
+        if source_entry
+        else {
+            "id": thread_id,
+            "thread_name": fallback_title,
+            "updated_at": fallback_updated_at,
+        }
+    )
     if fallback_updated_at:
         entry["updated_at"] = fallback_updated_at
     target_index.parent.mkdir(parents=True, exist_ok=True)

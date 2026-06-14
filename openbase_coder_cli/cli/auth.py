@@ -96,7 +96,9 @@ class _OAuthCallbackServer(HTTPServer):
     allow_reuse_address = True
 
 
-def _wait_for_callback(redirect_uri: str, *, expected_state: str = "") -> dict[str, str]:
+def _wait_for_callback(
+    redirect_uri: str, *, expected_state: str = ""
+) -> dict[str, str]:
     parsed = urlparse(redirect_uri)
     server = _OAuthCallbackServer(
         (parsed.hostname or "127.0.0.1", parsed.port or 80),
@@ -134,7 +136,9 @@ def _exchange_oauth_code(
     payload = response.json()
     access_token = payload.get("access_token", "")
     if not access_token:
-        raise click.ClickException("OAuth login succeeded but no access token was returned.")
+        raise click.ClickException(
+            "OAuth login succeeded but no access token was returned."
+        )
     return access_token
 
 

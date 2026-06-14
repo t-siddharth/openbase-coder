@@ -144,11 +144,7 @@ class AllThreadsConsumer(AsyncJsonWebsocketConsumer):
 
         manager = get_session_manager()
         threads = await manager.list_threads()
-        running = [
-            thread
-            for thread in threads
-            if thread.status == "running"
-        ]
+        running = [thread for thread in threads if thread.status == "running"]
         for thread in running:
             await self.send_json(
                 {

@@ -13,7 +13,9 @@ def _write_executable(path: Path) -> None:
     path.chmod(0o755)
 
 
-def test_resolve_uv_binary_prefers_workspace_virtualenv(tmp_path: Path, monkeypatch) -> None:
+def test_resolve_uv_binary_prefers_workspace_virtualenv(
+    tmp_path: Path, monkeypatch
+) -> None:
     workspace = tmp_path / "workspace"
     uv_path = workspace / "cli" / ".venv" / "bin" / "uv"
     _write_executable(uv_path)

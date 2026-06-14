@@ -54,6 +54,7 @@ def decode_jwt_claims_unverified(token: str) -> dict[str, Any]:
         return {}
     return claims if isinstance(claims, dict) else {}
 
+
 # Refresh the access token 60 seconds before it expires
 _REFRESH_MARGIN_SECONDS = 60
 DEFAULT_OAUTH_CLIENT_ID = "openbase-coder-cli"
@@ -109,7 +110,9 @@ class TokenManager:
         except (json.JSONDecodeError, OSError):
             # A torn read while another process writes; keep the in-memory
             # tokens rather than treating the user as logged out.
-            logger.warning("Could not parse %s; keeping in-memory tokens", AUTH_JSON_PATH)
+            logger.warning(
+                "Could not parse %s; keeping in-memory tokens", AUTH_JSON_PATH
+            )
             return
         self._access_token = data.get("access_token", "")
         self._refresh_token = data.get("refresh_token", "")

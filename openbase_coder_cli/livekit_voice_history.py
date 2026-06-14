@@ -39,7 +39,9 @@ class UnknownAgentVoiceError(AgentVoiceLookupError):
 class AmbiguousAgentVoiceError(AgentVoiceLookupError):
     """More than one active voice assignment exists for an agent name."""
 
-    def __init__(self, agent_name: str, candidates: tuple[VoiceHistoryEntry, ...]) -> None:
+    def __init__(
+        self, agent_name: str, candidates: tuple[VoiceHistoryEntry, ...]
+    ) -> None:
         self.agent_name = agent_name
         self.candidates = candidates
         candidate_ids = ", ".join(candidate.thread_id for candidate in candidates)
@@ -140,10 +142,12 @@ def record_voice_assignment(
     previous = _entry_from_payload(threads.get(thread_id))
     entry = VoiceHistoryEntry(
         thread_id=thread_id,
-        agent_name=_optional_str(agent_name) or (previous.agent_name if previous else None),
+        agent_name=_optional_str(agent_name)
+        or (previous.agent_name if previous else None),
         cwd=_optional_str(cwd) or (previous.cwd if previous else None),
         voice_id=_optional_str(voice_id) or (previous.voice_id if previous else None),
-        voice_name=_optional_str(voice_name) or (previous.voice_name if previous else None),
+        voice_name=_optional_str(voice_name)
+        or (previous.voice_name if previous else None),
         kind=_optional_str(kind) or (previous.kind if previous else "codex_thread"),
         source=_optional_str(source) or (previous.source if previous else "unknown"),
         first_seen_at=previous.first_seen_at if previous else timestamp,
@@ -317,7 +321,9 @@ def _thread_agent_name_summary(payload: dict[str, Any]) -> list[dict[str, Any]]:
             "source": entry.source,
             "kind": entry.kind,
         }
-        for entry in sorted(entries, key=lambda candidate: candidate.last_seen_at, reverse=True)[:20]
+        for entry in sorted(
+            entries, key=lambda candidate: candidate.last_seen_at, reverse=True
+        )[:20]
     ]
 
 

@@ -88,7 +88,9 @@ def list_uv_tools_payload() -> dict:
         }
 
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "uv tool list failed."
+        detail = (
+            result.stderr.strip() or result.stdout.strip() or "uv tool list failed."
+        )
         return {
             "uv_available": True,
             "uv_path": uv_bin,

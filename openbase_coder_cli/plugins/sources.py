@@ -95,7 +95,9 @@ def resolve_source(source: str, ref: str | None) -> ResolvedPluginSource:
         subprocess.run(["git", "clone", github_url, str(target_dir)], check=True)
 
     branch_or_ref = ref or _default_branch(target_dir)
-    subprocess.run(["git", "-C", str(target_dir), "checkout", branch_or_ref], check=True)
+    subprocess.run(
+        ["git", "-C", str(target_dir), "checkout", branch_or_ref], check=True
+    )
     if not _COMMIT_RE.match(branch_or_ref):
         subprocess.run(["git", "-C", str(target_dir), "pull", "--ff-only"], check=True)
     commit_sha = _resolve_commit(target_dir)
@@ -125,7 +127,7 @@ def inspect_source(source_path: Path) -> tuple[str, str, str]:
     group = entry_points.get("openbase_coder.plugins", {})
     if not isinstance(group, dict) or not group:
         raise click.ClickException(
-            "Plugin pyproject.toml must declare [project.entry-points.\"openbase_coder.plugins\"]"
+            'Plugin pyproject.toml must declare [project.entry-points."openbase_coder.plugins"]'
         )
 
     if len(group) != 1:

@@ -16,7 +16,9 @@ def test_codex_sync_once_invokes_sync_pass(monkeypatch) -> None:
     def fake_sync_codex_threads_once(**kwargs):
         calls.append(kwargs)
         return [
-            CodexThreadSyncResult("thread-1", "transferred", "normal_to_voice", "synced_to_voice"),
+            CodexThreadSyncResult(
+                "thread-1", "transferred", "normal_to_voice", "synced_to_voice"
+            ),
             CodexThreadSyncResult("thread-2", "conflict", None, "both_homes_changed"),
             CodexThreadSyncResult("thread-3", "skipped", None, "skipped_active"),
         ]
@@ -27,7 +29,9 @@ def test_codex_sync_once_invokes_sync_pass(monkeypatch) -> None:
         fake_sync_codex_threads_once,
     )
 
-    result = CliRunner().invoke(codex_sync_cli.codex_sync, ["once", "--stability-delay", "0"])
+    result = CliRunner().invoke(
+        codex_sync_cli.codex_sync, ["once", "--stability-delay", "0"]
+    )
 
     assert result.exit_code == 0
     assert calls == [{"stability_delay_seconds": 0.0, "max_age_days": 15}]
@@ -37,8 +41,12 @@ def test_codex_sync_once_invokes_sync_pass(monkeypatch) -> None:
 def test_sync_result_summary_aggregates_status_reason_and_direction_counts() -> None:
     summary = codex_sync_cli._sync_result_summary(
         [
-            CodexThreadSyncResult("thread-1", "transferred", "normal_to_voice", "synced_to_voice"),
-            CodexThreadSyncResult("thread-2", "transferred", "voice_to_normal", "synced_to_normal"),
+            CodexThreadSyncResult(
+                "thread-1", "transferred", "normal_to_voice", "synced_to_voice"
+            ),
+            CodexThreadSyncResult(
+                "thread-2", "transferred", "voice_to_normal", "synced_to_normal"
+            ),
             CodexThreadSyncResult("thread-3", "conflict", None, "both_homes_changed"),
             CodexThreadSyncResult("thread-4", "skipped", None, "skipped_old"),
             CodexThreadSyncResult("thread-5", "skipped", None, "skipped_active"),

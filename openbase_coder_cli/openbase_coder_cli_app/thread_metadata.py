@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
+from super_agents.state import read_state_file_locked
+
 from openbase_coder_cli.dispatcher_config import selected_tts_provider_id
 from openbase_coder_cli.livekit_voice_history import (
     VoiceHistoryEntry,

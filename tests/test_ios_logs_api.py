@@ -89,7 +89,9 @@ def test_ios_logs_upload_accepts_full_retained_buffer(monkeypatch, tmp_path) -> 
     )
 
 
-def test_ios_logs_upload_rejects_entries_over_retained_buffer(monkeypatch, tmp_path) -> None:
+def test_ios_logs_upload_rejects_entries_over_retained_buffer(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setattr(views, "DEFAULT_LOG_DIR", tmp_path / "logs")
 
     response = _upload_ios_logs(

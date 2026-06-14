@@ -35,9 +35,7 @@ def test_annotate_thread_payload_includes_active_target_voice_name(
         encoding="utf-8",
     )
 
-    target = annotate_thread_payload(
-        {"thread_id": "target-1", "name": "Target thread"}
-    )
+    target = annotate_thread_payload({"thread_id": "target-1", "name": "Target thread"})
     dispatcher = annotate_thread_payload({"thread_id": "dispatcher-1"})
     other = annotate_thread_payload({"thread_id": "other-1"})
 

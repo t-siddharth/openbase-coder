@@ -95,7 +95,9 @@ def test_restart_payload_rejects_super_agents_mcp_target(monkeypatch):
     monkeypatch.setattr(openbase_services, "schedule_restart", fake_schedule)
 
     try:
-        openbase_services.schedule_openbase_restart_payload(service_name="super-agents-mcp")
+        openbase_services.schedule_openbase_restart_payload(
+            service_name="super-agents-mcp"
+        )
     except openbase_services.click.ClickException as exc:
         assert "Unknown restart target 'super-agents-mcp'" in str(exc)
     else:
@@ -199,7 +201,9 @@ def test_codex_service_restart_does_not_warn(monkeypatch):
 
     monkeypatch.setattr(openbase_services, "schedule_restart", fake_schedule)
 
-    payload = openbase_services.run_openbase_service_action("codex-app-server", "restart")
+    payload = openbase_services.run_openbase_service_action(
+        "codex-app-server", "restart"
+    )
 
     assert payload["scheduled"] is True
     assert payload["restart"]["services"] == ["codex-app-server"]

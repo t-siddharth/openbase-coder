@@ -127,7 +127,12 @@ def show_routine(name: str) -> None:
 @click.option("--thread-id", help="Existing Codex app-server thread id to target.")
 @click.option("--cwd", type=click.Path(path_type=Path, file_okay=False))
 @click.option("--approval-policy", default="never", show_default=True)
-@click.option("--sandbox-type", type=click.Choice(SANDBOX_TYPES), default="dangerFullAccess", show_default=True)
+@click.option(
+    "--sandbox-type",
+    type=click.Choice(SANDBOX_TYPES),
+    default="dangerFullAccess",
+    show_default=True,
+)
 @click.option("--mode", type=click.Choice(MODES), default="default", show_default=True)
 @click.option("--model")
 @click.option("--reasoning-effort", type=click.Choice(REASONING_EFFORTS))
@@ -237,10 +242,14 @@ def delete_routine(name: str) -> None:
 
 @routines.command("run-due")
 @click.option("--name", help="Only run the named routine.")
-@click.option("--force", is_flag=True, help="Run the named routine even when it is not due.")
+@click.option(
+    "--force", is_flag=True, help="Run the named routine even when it is not due."
+)
 def run_due_routines(name: str | None, force: bool) -> None:
     """Run routines that are currently due."""
-    _json_echo(_run_client(lambda client: client.run_due_routines(name=name, force=force)))
+    _json_echo(
+        _run_client(lambda client: client.run_due_routines(name=name, force=force))
+    )
 
 
 @routines.command("run-loop")

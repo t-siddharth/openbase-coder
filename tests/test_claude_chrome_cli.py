@@ -102,20 +102,28 @@ def test_steer_calls_companion(monkeypatch):
     FakeCompanionClient.instances = []
     monkeypatch.setattr(claude_chrome_cli, "CompanionClient", FakeCompanionClient)
 
-    result = CliRunner().invoke(claude_chrome_cli.claude_chrome, ["steer", "try", "again"])
+    result = CliRunner().invoke(
+        claude_chrome_cli.claude_chrome, ["steer", "try", "again"]
+    )
 
     assert result.exit_code == 0
-    assert FakeCompanionClient.instances[0].calls == [("steer_claude_chrome", "try again")]
+    assert FakeCompanionClient.instances[0].calls == [
+        ("steer_claude_chrome", "try again")
+    ]
 
 
 def test_queue_calls_companion(monkeypatch):
     FakeCompanionClient.instances = []
     monkeypatch.setattr(claude_chrome_cli, "CompanionClient", FakeCompanionClient)
 
-    result = CliRunner().invoke(claude_chrome_cli.claude_chrome, ["queue", "then", "summarize"])
+    result = CliRunner().invoke(
+        claude_chrome_cli.claude_chrome, ["queue", "then", "summarize"]
+    )
 
     assert result.exit_code == 0
-    assert FakeCompanionClient.instances[0].calls == [("queue_claude_chrome", "then summarize")]
+    assert FakeCompanionClient.instances[0].calls == [
+        ("queue_claude_chrome", "then summarize")
+    ]
 
 
 def test_abort_calls_companion(monkeypatch):

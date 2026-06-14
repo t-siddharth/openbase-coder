@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 IOS_LOG_UPLOAD_FILENAME = "ios-app.log"
 IOS_LOG_UPLOAD_MAX_ENTRIES = 1000
 
+
 class IOSLogEntrySerializer(serializers.Serializer):
     timestamp = serializers.CharField(required=False, allow_blank=True, max_length=64)
     component = serializers.CharField(required=False, allow_blank=True, max_length=128)

@@ -33,7 +33,9 @@ def is_thread_favorite(thread_id: str | None) -> bool:
     return bool(favorite_payload(thread_id)["is_favorite"])
 
 
-def set_thread_favorite(thread_id: str, is_favorite: bool) -> dict[str, str | bool | None]:
+def set_thread_favorite(
+    thread_id: str, is_favorite: bool
+) -> dict[str, str | bool | None]:
     """Set or clear favorite metadata for a thread."""
     normalized = _normalize_thread_id(thread_id)
     if not normalized:
@@ -42,7 +44,11 @@ def set_thread_favorite(thread_id: str, is_favorite: bool) -> dict[str, str | bo
     with _lock:
         favorites = _read_favorites_unlocked()
         if is_favorite:
-            current = favorites.get(normalized) if isinstance(favorites.get(normalized), dict) else {}
+            current = (
+                favorites.get(normalized)
+                if isinstance(favorites.get(normalized), dict)
+                else {}
+            )
             favorites[normalized] = {
                 "thread_id": normalized,
                 "favorited_at": current.get("favorited_at") or _utc_now(),

@@ -150,6 +150,7 @@ def _merge_term_pronunciations(
             raise ValueError("term pronunciations must map non-empty strings")
         term_pronunciations[term.strip()] = pronunciation.strip()
 
+
 EXTENSION_SPEECH = {
     "md": "M D",
     "py": "P Y",

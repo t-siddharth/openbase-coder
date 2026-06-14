@@ -41,9 +41,7 @@ SUPER_AGENTS_STATE_FILE_ENV = "SUPER_AGENTS_STATE_FILE"
 REPORT_THREAD_ID_RE = re.compile(
     r"(?im)^\s*(?:super agent\s+)?thread\s+id\s*:\s*([A-Za-z0-9._:-]+)\s*$"
 )
-REPORT_THREAD_NAME_RE = re.compile(
-    r"(?im)^\s*super agent thread name\s*:\s*(.+?)\s*$"
-)
+REPORT_THREAD_NAME_RE = re.compile(r"(?im)^\s*super agent thread name\s*:\s*(.+?)\s*$")
 ACTION_HEADING_RE = re.compile(
     r"(?i)^#{1,6}\s*(action items?|next steps?|follow[- ]?ups?|todo|to do|implementation|recommendations?)\b"
 )
@@ -327,7 +325,9 @@ def _resolve_report_origin(
     explicit_name = _parse_report_thread_name(content)
     if explicit_name:
         label_matches = [
-            session for session in state.sessions.values() if session.label == explicit_name
+            session
+            for session in state.sessions.values()
+            if session.label == explicit_name
         ]
         cwd_matches = [
             session
@@ -356,9 +356,7 @@ def _resolve_report_origin(
             key=lambda item: item[0],
         )
         close_matches = [
-            item
-            for item in scored
-            if item[0] <= REPORT_ORIGIN_TIME_WINDOW_SECONDS
+            item for item in scored if item[0] <= REPORT_ORIGIN_TIME_WINDOW_SECONDS
         ]
         if len(close_matches) == 1:
             return _origin_from_session(
@@ -390,7 +388,11 @@ def _report_action_prompt(
         truncated = True
 
     action_text = "\n".join(action_items)
-    truncation_note = "\n\nThe report content below was truncated for prompt size." if truncated else ""
+    truncation_note = (
+        "\n\nThe report content below was truncated for prompt size."
+        if truncated
+        else ""
+    )
     return (
         "Implement the action items from this report in the same project.\n\n"
         f"Project path: {project_path}\n"
@@ -502,11 +504,14 @@ def project_reports_action(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    origin, origin_error = _resolve_report_origin(content, resolved, file_path.stat().st_mtime)
+    origin, origin_error = _resolve_report_origin(
+        content, resolved, file_path.stat().st_mtime
+    )
     if origin is None:
         return Response(
             {
-                "error": origin_error or "The originating Super Agent thread could not be determined.",
+                "error": origin_error
+                or "The originating Super Agent thread could not be determined.",
                 "reason": "origin_unknown",
             },
             status=status.HTTP_400_BAD_REQUEST,
@@ -519,7 +524,9 @@ def project_reports_action(request):
         action_items=action_items,
     )
     try:
-        turn_id = async_to_sync(get_session_manager().start_turn)(origin.thread_id, prompt)
+        turn_id = async_to_sync(get_session_manager().start_turn)(
+            origin.thread_id, prompt
+        )
     except ValueError as exc:
         return Response(
             {"error": str(exc), "reason": "turn_start_failed"},

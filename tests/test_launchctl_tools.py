@@ -77,7 +77,9 @@ def test_start_action_bootstraps_unloaded_launch_agent(
     def fake_run(*args: str, check: bool = True) -> subprocess.CompletedProcess:
         calls.append(args)
         if args == ("list",):
-            return subprocess.CompletedProcess(["launchctl", *args], 0, "PID\tStatus\tLabel\n", "")
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, "PID\tStatus\tLabel\n", ""
+            )
         return subprocess.CompletedProcess(["launchctl", *args], 0, "", "")
 
     monkeypatch.setattr(launchctl_tools, "_run_launchctl", fake_run)
@@ -130,7 +132,9 @@ def test_restart_action_boots_out_loaded_launch_agent_before_bootstrap(
     ]
 
 
-def test_livekit_launchctl_restart_warns_before_action(tmp_path: Path, monkeypatch) -> None:
+def test_livekit_launchctl_restart_warns_before_action(
+    tmp_path: Path, monkeypatch
+) -> None:
     launch_agents_dir = tmp_path / "Library" / "LaunchAgents"
     label = "com.openbase.coder.livekit-agent"
     plist_path = launch_agents_dir / f"{label}.plist"
@@ -181,7 +185,9 @@ def test_livekit_launchctl_restart_warns_before_action(tmp_path: Path, monkeypat
     assert calls[0] == ("list",)
 
 
-def test_non_livekit_launchctl_restart_does_not_warn(tmp_path: Path, monkeypatch) -> None:
+def test_non_livekit_launchctl_restart_does_not_warn(
+    tmp_path: Path, monkeypatch
+) -> None:
     launch_agents_dir = tmp_path / "Library" / "LaunchAgents"
     label = "com.example.worker"
     plist_path = launch_agents_dir / f"{label}.plist"
