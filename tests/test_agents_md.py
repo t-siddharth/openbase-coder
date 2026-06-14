@@ -25,13 +25,17 @@ def test_agents_md_lists_all_instruction_targets(tmp_path: Path, monkeypatch) ->
 
     voice_home = tmp_path / "openbase" / "codex_home"
     normal_home = tmp_path / "codex"
+    claude_config = tmp_path / "openbase" / "claude_config"
     voice_agents = voice_home / "AGENTS.md"
     normal_agents = normal_home / "AGENTS.md"
+    claude_md = claude_config / "CLAUDE.md"
     direct_instructions = voice_home / "VOICE_INSTRUCTIONS.md"
     dispatcher_instructions = voice_home / "DISPATCHER_INSTRUCTIONS.md"
     super_agent_instructions = voice_home / "SUPER_AGENT_INSTRUCTIONS.md"
     voice_home.mkdir(parents=True)
+    claude_config.mkdir(parents=True)
     voice_agents.write_text("voice instructions", encoding="utf-8")
+    claude_md.write_text("claude instructions", encoding="utf-8")
     direct_instructions.write_text("direct instructions", encoding="utf-8")
     super_agent_instructions.write_text("super instructions", encoding="utf-8")
 
@@ -39,6 +43,8 @@ def test_agents_md_lists_all_instruction_targets(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(views, "CODEX_AGENTS_MD_PATH", voice_agents)
     monkeypatch.setattr(views, "NORMAL_CODEX_HOME_DIR", normal_home)
     monkeypatch.setattr(views, "NORMAL_CODEX_AGENTS_MD_PATH", normal_agents)
+    monkeypatch.setattr(views, "OPENBASE_CLAUDE_CONFIG_DIR", claude_config)
+    monkeypatch.setattr(views, "OPENBASE_CLAUDE_MD_PATH", claude_md)
     monkeypatch.setattr(
         views, "CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH", direct_instructions
     )
@@ -63,6 +69,7 @@ def test_agents_md_lists_all_instruction_targets(tmp_path: Path, monkeypatch) ->
     documents = {document["id"]: document for document in response.data["documents"]}
     assert list(documents) == [
         "voice",
+        "claude",
         "normal",
         "direct_livekit",
         "super_agent",
@@ -73,6 +80,9 @@ def test_agents_md_lists_all_instruction_targets(tmp_path: Path, monkeypatch) ->
     assert documents["normal"]["content"] == ""
     assert documents["normal"]["exists"] is False
     assert documents["normal"]["path"] == str(normal_agents)
+    assert documents["claude"]["content"] == "claude instructions"
+    assert documents["claude"]["exists"] is True
+    assert documents["claude"]["path"] == str(claude_md)
     assert documents["direct_livekit"]["content"] == "direct instructions"
     assert documents["direct_livekit"]["exists"] is True
     assert documents["super_agent"]["label"] == "Super Agent instructions"

@@ -63,6 +63,7 @@ from openbase_coder_cli.livekit_agent.super_agents_client import (
     SuperAgentsLiveKitClient,
 )
 from openbase_coder_cli.paths import (
+    CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH,
     CODEX_DISPATCHER_CONFIG_PATH,
     CODEX_DISPATCHER_INSTRUCTIONS_PATH,
 )
@@ -146,7 +147,7 @@ DIRECT_LIVEKIT_INSTRUCTIONS_PATH_ENV = (
 )
 DIRECT_LIVEKIT_INSTRUCTIONS_TEXT_ENV = "LIVEKIT_DIRECT_CODEX_DEVELOPER_INSTRUCTIONS"
 DEFAULT_DIRECT_LIVEKIT_INSTRUCTIONS_PATH = (
-    Path.home() / ".openbase" / "codex_home" / "VOICE_INSTRUCTIONS.md"
+    CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH
 )
 DIRECT_LIVEKIT_BUILTIN_DEVELOPER_INSTRUCTIONS = """
 You are receiving direct user speech from a LiveKit voice session.

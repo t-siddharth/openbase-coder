@@ -19,6 +19,8 @@ from openbase_coder_cli.paths import (
     CODEX_SUPER_AGENT_INSTRUCTIONS_PATH,
     NORMAL_CODEX_AGENTS_MD_PATH,
     NORMAL_CODEX_HOME_DIR,
+    OPENBASE_CLAUDE_CONFIG_DIR,
+    OPENBASE_CLAUDE_MD_PATH,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,7 +29,14 @@ logger = logging.getLogger(__name__)
 class AgentsMdSerializer(serializers.Serializer):
     content = serializers.CharField(allow_blank=True, trim_whitespace=False)
     target = serializers.ChoiceField(
-        choices=["voice", "normal", "super_agent", "direct_livekit", "dispatcher"],
+        choices=[
+            "voice",
+            "normal",
+            "claude",
+            "super_agent",
+            "direct_livekit",
+            "dispatcher",
+        ],
         default="voice",
         required=False,
     )
@@ -56,6 +65,13 @@ def agents_md(request):
             "path": CODEX_AGENTS_MD_PATH,
             "codex_home": CODEX_HOME_DIR,
         },
+        "claude": {
+            "id": "claude",
+            "label": "Openbase Claude config CLAUDE.md",
+            "description": "Affects Claude Code sessions that use Openbase's managed CLAUDE_CONFIG_DIR.",
+            "path": OPENBASE_CLAUDE_MD_PATH,
+            "codex_home": OPENBASE_CLAUDE_CONFIG_DIR,
+        },
         "normal": {
             "id": "normal",
             "label": "Normal Codex home AGENTS.md",
@@ -66,7 +82,7 @@ def agents_md(request):
         "direct_livekit": {
             "id": "direct_livekit",
             "label": "Direct voice session instructions",
-            "description": "Affects Codex threads that are directly connected to a LiveKit voice session after a voice transfer.",
+            "description": "Affects agent threads that are directly connected to a LiveKit voice session after a voice transfer.",
             "path": direct_livekit_path,
             "codex_home": CODEX_HOME_DIR,
         },

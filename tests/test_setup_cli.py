@@ -3,10 +3,54 @@ from __future__ import annotations
 import importlib
 import json
 import subprocess
+from pathlib import Path
 
 from click.testing import CliRunner
 
 setup_cli = importlib.import_module("openbase_coder_cli.cli.setup")
+
+
+def _patch_openbase_agent_paths(monkeypatch, tmp_path: Path) -> tuple[Path, Path]:
+    codex_home = tmp_path / "codex_home"
+    claude_config = tmp_path / "claude_config"
+    instructions = tmp_path / "openbase" / "instructions"
+    monkeypatch.setattr(setup_cli, "CODEX_HOME_DIR", codex_home)
+    monkeypatch.setattr(setup_cli, "OPENBASE_CLAUDE_CONFIG_DIR", claude_config)
+    monkeypatch.setattr(setup_cli, "OPENBASE_CLAUDE_MD_PATH", claude_config / "CLAUDE.md")
+    monkeypatch.setattr(
+        setup_cli,
+        "CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH",
+        instructions / "VOICE_INSTRUCTIONS.md",
+    )
+    monkeypatch.setattr(
+        setup_cli,
+        "CODEX_DISPATCHER_INSTRUCTIONS_PATH",
+        instructions / "DISPATCHER_INSTRUCTIONS.md",
+    )
+    monkeypatch.setattr(
+        setup_cli,
+        "CODEX_SUPER_AGENT_INSTRUCTIONS_PATH",
+        instructions / "SUPER_AGENT_INSTRUCTIONS.md",
+    )
+    monkeypatch.setattr(
+        setup_cli,
+        "LEGACY_CODEX_HOME_DEFAULT_FILES",
+        (
+            (
+                instructions / "VOICE_INSTRUCTIONS.md",
+                codex_home / "VOICE_INSTRUCTIONS.md",
+            ),
+            (
+                instructions / "DISPATCHER_INSTRUCTIONS.md",
+                codex_home / "DISPATCHER_INSTRUCTIONS.md",
+            ),
+            (
+                instructions / "SUPER_AGENT_INSTRUCTIONS.md",
+                codex_home / "SUPER_AGENT_INSTRUCTIONS.md",
+            ),
+        ),
+    )
+    return codex_home, claude_config
 
 
 def test_update_existing_default_workspace_resets_dirty_checkout(
@@ -116,17 +160,24 @@ def test_ensure_codex_home_default_files_links_missing_files(
     workspace = tmp_path / "workspace"
     instructions = workspace / "instructions"
     instructions.mkdir(parents=True)
-    codex_home = tmp_path / "codex_home"
-    targets = tuple(
-        (resource_name, codex_home / resource_name)
-        for resource_name, _target_path in setup_cli.CODEX_HOME_DEFAULT_FILES
+    codex_home, _claude_config = _patch_openbase_agent_paths(monkeypatch, tmp_path)
+    shared_instructions = tmp_path / "openbase" / "instructions"
+    targets = (
+        ("VOICE_INSTRUCTIONS.md", shared_instructions / "VOICE_INSTRUCTIONS.md"),
+        (
+            "DISPATCHER_INSTRUCTIONS.md",
+            shared_instructions / "DISPATCHER_INSTRUCTIONS.md",
+        ),
+        (
+            "SUPER_AGENT_INSTRUCTIONS.md",
+            shared_instructions / "SUPER_AGENT_INSTRUCTIONS.md",
+        ),
     )
     for resource_name, _target_path in targets:
         (instructions / resource_name).write_text(
             f"default {resource_name}\n",
             encoding="utf-8",
         )
-    monkeypatch.setattr(setup_cli, "CODEX_HOME_DIR", codex_home)
     monkeypatch.setattr(setup_cli, "CODEX_HOME_DEFAULT_FILES", targets)
 
     setup_cli._ensure_codex_home_default_files(str(workspace))
@@ -135,6 +186,9 @@ def test_ensure_codex_home_default_files_links_missing_files(
         assert target_path.is_symlink()
         assert target_path.resolve() == (instructions / resource_name).resolve()
         assert target_path.read_text(encoding="utf-8") == f"default {resource_name}\n"
+        legacy_path = codex_home / resource_name
+        assert legacy_path.is_symlink()
+        assert legacy_path.readlink() == target_path
 
 
 def test_ensure_codex_home_default_files_preserves_custom_existing_files(
@@ -143,9 +197,10 @@ def test_ensure_codex_home_default_files_preserves_custom_existing_files(
     workspace = tmp_path / "workspace"
     instructions = workspace / "instructions"
     instructions.mkdir(parents=True)
-    codex_home = tmp_path / "codex_home"
+    codex_home, _claude_config = _patch_openbase_agent_paths(monkeypatch, tmp_path)
+    shared_instructions = tmp_path / "openbase" / "instructions"
     existing_path = codex_home / "AGENTS.md"
-    missing_path = codex_home / "VOICE_INSTRUCTIONS.md"
+    missing_path = shared_instructions / "VOICE_INSTRUCTIONS.md"
     existing_path.parent.mkdir(parents=True)
     existing_path.write_text("custom instructions\n", encoding="utf-8")
     (instructions / "AGENTS.md").write_text("default agents\n", encoding="utf-8")
@@ -153,7 +208,6 @@ def test_ensure_codex_home_default_files_preserves_custom_existing_files(
         "default voice\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(setup_cli, "CODEX_HOME_DIR", codex_home)
     monkeypatch.setattr(
         setup_cli,
         "CODEX_HOME_DEFAULT_FILES",
@@ -177,6 +231,7 @@ def test_ensure_codex_home_default_files_preserves_custom_existing_files(
     assert missing_path.is_symlink()
     assert missing_path.resolve() == (instructions / "VOICE_INSTRUCTIONS.md").resolve()
     assert missing_path.read_text(encoding="utf-8") == "default voice\n"
+    assert (codex_home / "VOICE_INSTRUCTIONS.md").readlink() == missing_path
 
 
 def test_ensure_codex_home_default_files_rewrites_matching_agents_file(
@@ -185,12 +240,11 @@ def test_ensure_codex_home_default_files_rewrites_matching_agents_file(
     workspace = tmp_path / "workspace"
     instructions = workspace / "instructions"
     instructions.mkdir(parents=True)
-    codex_home = tmp_path / "codex_home"
+    codex_home, _claude_config = _patch_openbase_agent_paths(monkeypatch, tmp_path)
     target_path = codex_home / "AGENTS.md"
     target_path.parent.mkdir(parents=True)
     (instructions / "AGENTS.md").write_text("default agents\n", encoding="utf-8")
     target_path.write_text("default agents\n", encoding="utf-8")
-    monkeypatch.setattr(setup_cli, "CODEX_HOME_DIR", codex_home)
     monkeypatch.setattr(
         setup_cli,
         "CODEX_HOME_DEFAULT_FILES",
@@ -216,13 +270,12 @@ def test_ensure_codex_home_default_files_converts_stale_agents_symlink(
     stale_instructions = tmp_path / "stale-instructions"
     instructions.mkdir(parents=True)
     stale_instructions.mkdir()
-    codex_home = tmp_path / "codex_home"
+    codex_home, _claude_config = _patch_openbase_agent_paths(monkeypatch, tmp_path)
     target_path = codex_home / "AGENTS.md"
     target_path.parent.mkdir(parents=True)
     (instructions / "AGENTS.md").write_text("default agents\n", encoding="utf-8")
     (stale_instructions / "AGENTS.md").write_text("stale agents\n", encoding="utf-8")
     target_path.symlink_to(stale_instructions / "AGENTS.md")
-    monkeypatch.setattr(setup_cli, "CODEX_HOME_DIR", codex_home)
     monkeypatch.setattr(
         setup_cli,
         "CODEX_HOME_DEFAULT_FILES",
@@ -244,13 +297,12 @@ def test_ensure_codex_home_default_files_converts_current_agents_symlink(
     workspace = tmp_path / "workspace"
     instructions = workspace / "instructions"
     instructions.mkdir(parents=True)
-    codex_home = tmp_path / "codex_home"
+    codex_home, _claude_config = _patch_openbase_agent_paths(monkeypatch, tmp_path)
     target_path = codex_home / "AGENTS.md"
     target_path.parent.mkdir(parents=True)
     source_path = instructions / "AGENTS.md"
     source_path.write_text("default agents\n", encoding="utf-8")
     target_path.symlink_to(source_path)
-    monkeypatch.setattr(setup_cli, "CODEX_HOME_DIR", codex_home)
     monkeypatch.setattr(
         setup_cli,
         "CODEX_HOME_DEFAULT_FILES",
@@ -272,9 +324,8 @@ def test_ensure_codex_home_default_files_skips_missing_sources(
 ) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    codex_home = tmp_path / "codex_home"
+    codex_home, _claude_config = _patch_openbase_agent_paths(monkeypatch, tmp_path)
     target_path = codex_home / "AGENTS.md"
-    monkeypatch.setattr(setup_cli, "CODEX_HOME_DIR", codex_home)
     monkeypatch.setattr(
         setup_cli,
         "CODEX_HOME_DEFAULT_FILES",
@@ -297,15 +348,23 @@ def test_ensure_codex_home_dispatcher_config_creates_default(
     setup_cli._ensure_codex_home_dispatcher_config()
 
     assert json.loads(config_path.read_text(encoding="utf-8")) == {
+        "backend_models": {
+            "claude-agent-sdk": {
+                "dispatcher": "sonnet",
+                "super_agents": "sonnet",
+            },
+            "claude-tui": {
+                "dispatcher": "sonnet",
+                "super_agents": "sonnet",
+            },
+            "codex": {
+                "dispatcher": "gpt-5.5",
+                "super_agents": "gpt-5.5",
+            },
+        },
         "dispatcher_reasoning_effort": "low",
         "super_agents_reasoning_effort": "high",
     }
-    assert config_path.read_text(encoding="utf-8") == (
-        "{\n"
-        '  "dispatcher_reasoning_effort": "low",\n'
-        '  "super_agents_reasoning_effort": "high"\n'
-        "}\n"
-    )
     assert legacy_path.is_symlink()
     assert legacy_path.resolve() == config_path.resolve()
 
@@ -367,16 +426,18 @@ def test_symlink_codex_home_skills_links_workspace_skills(
 ) -> None:
     workspace = tmp_path / "workspace"
     skill = workspace / "skills" / "skills" / "sample-skill"
-    codex_home = tmp_path / "codex_home"
+    codex_home, claude_config = _patch_openbase_agent_paths(monkeypatch, tmp_path)
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("# Sample\n", encoding="utf-8")
-    monkeypatch.setattr(setup_cli, "CODEX_HOME_DIR", codex_home)
 
     setup_cli._symlink_codex_home_skills(str(workspace))
 
     target = codex_home / "skills" / "sample-skill"
     assert target.is_symlink()
     assert target.resolve() == skill.resolve()
+    claude_target = claude_config / "skills" / "sample-skill"
+    assert claude_target.is_symlink()
+    assert claude_target.resolve() == skill.resolve()
 
 
 def test_symlink_codex_home_skills_replaces_existing_symlink(
@@ -385,14 +446,13 @@ def test_symlink_codex_home_skills_replaces_existing_symlink(
     workspace = tmp_path / "workspace"
     skill = workspace / "skills" / "skills" / "sample-skill"
     stale_skill = tmp_path / "stale-skill"
-    codex_home = tmp_path / "codex_home"
+    codex_home, _claude_config = _patch_openbase_agent_paths(monkeypatch, tmp_path)
     target = codex_home / "skills" / "sample-skill"
     skill.mkdir(parents=True)
     stale_skill.mkdir()
     target.parent.mkdir(parents=True)
     (skill / "SKILL.md").write_text("# Sample\n", encoding="utf-8")
     target.symlink_to(stale_skill)
-    monkeypatch.setattr(setup_cli, "CODEX_HOME_DIR", codex_home)
 
     setup_cli._symlink_codex_home_skills(str(workspace))
 
@@ -405,13 +465,12 @@ def test_symlink_codex_home_skills_preserves_real_directories(
 ) -> None:
     workspace = tmp_path / "workspace"
     skill = workspace / "skills" / "skills" / "sample-skill"
-    codex_home = tmp_path / "codex_home"
+    codex_home, _claude_config = _patch_openbase_agent_paths(monkeypatch, tmp_path)
     target = codex_home / "skills" / "sample-skill"
     skill.mkdir(parents=True)
     target.mkdir(parents=True)
     (skill / "SKILL.md").write_text("# Sample\n", encoding="utf-8")
     (target / "SKILL.md").write_text("# Custom\n", encoding="utf-8")
-    monkeypatch.setattr(setup_cli, "CODEX_HOME_DIR", codex_home)
 
     setup_cli._symlink_codex_home_skills(str(workspace))
 
@@ -520,6 +579,47 @@ def test_ensure_codex_home_config_falls_back_to_resolved_uv(
     )
 
 
+def test_ensure_claude_config_installs_super_agents_mcp(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    command = workspace / ".venv" / "bin" / "super-agents-mcp"
+    dispatcher_config = tmp_path / "dispatcher-config.json"
+    _codex_home, claude_config = _patch_openbase_agent_paths(monkeypatch, tmp_path)
+    claude_json = claude_config / ".claude.json"
+    command.parent.mkdir(parents=True)
+    command.write_text("#!/bin/sh\n", encoding="utf-8")
+    claude_json.parent.mkdir(parents=True)
+    claude_json.write_text(
+        json.dumps(
+            {
+                "firstStartTime": "2026-06-18T00:00:00.000Z",
+                "mcpServers": {"playwright": {"command": "npx"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(setup_cli, "OPENBASE_CLAUDE_JSON_PATH", claude_json)
+    monkeypatch.setattr(setup_cli, "CODEX_DISPATCHER_CONFIG_PATH", dispatcher_config)
+
+    setup_cli._ensure_claude_config(str(workspace))
+
+    payload = json.loads(claude_json.read_text(encoding="utf-8"))
+    assert payload["firstStartTime"] == "2026-06-18T00:00:00.000Z"
+    assert payload["mcpServers"]["playwright"] == {"command": "npx"}
+    assert payload["mcpServers"]["super-agents"] == {
+        "type": "stdio",
+        "command": str(command),
+        "env": {
+            "CLAUDE_CONFIG_DIR": str(claude_config),
+            "SUPER_AGENTS_DEFAULT_CONFIG_PATH": str(dispatcher_config),
+            "CODEX_SUPER_AGENT_INSTRUCTIONS_PATH": str(
+                setup_cli.CODEX_SUPER_AGENT_INSTRUCTIONS_PATH
+            ),
+        },
+    }
+
+
 def test_ensure_codex_home_config_can_link_normal_codex_config(
     tmp_path, monkeypatch
 ) -> None:
@@ -592,6 +692,8 @@ def test_ensure_env_file_documents_coding_backend_default(tmp_path) -> None:
     assert "# Claude backends apply to Super Agents UI-driver sessions" in content
     assert "CODEX_CLAUDE_" not in content
     assert "# SUPER_AGENTS_CLAUDE_TUI_CMD=claude" in content
+    assert "CLAUDE_CONFIG_DIR=" in content
+    assert "SUPER_AGENTS_DEFAULT_CONFIG_PATH=" in content
     assert "CODEX_MODEL=gpt-5.5" in content
 
 
@@ -709,6 +811,7 @@ def test_setup_configures_tailscale_serve(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         setup_cli, "_ensure_codex_home_config", lambda _workspace_dir: None
     )
+    monkeypatch.setattr(setup_cli, "_ensure_claude_config", lambda _workspace_dir: None)
     monkeypatch.setattr(setup_cli, "_install_cli_shim", lambda _workspace_dir: None)
     monkeypatch.setattr(setup_cli, "_build_console", lambda _workspace_dir: None)
     monkeypatch.setattr(setup_cli, "install_all_services", lambda _config: None)

@@ -28,10 +28,25 @@ def ensure_openbase_agents_md(
     report: Callable[[str], None] | None = None,
 ) -> bool:
     """Maintain an editable AGENTS.md with a replaceable Openbase section."""
+    return ensure_openbase_instruction_md(
+        workspace_dir,
+        target_path=(codex_home_dir or CODEX_HOME_DIR) / "AGENTS.md",
+        document_label="Codex home AGENTS.md",
+        report=report,
+    )
+
+
+def ensure_openbase_instruction_md(
+    workspace_dir: str | Path,
+    *,
+    target_path: Path,
+    document_label: str,
+    report: Callable[[str], None] | None = None,
+) -> bool:
+    """Maintain an editable agent instruction file with an Openbase section."""
     source_path = Path(workspace_dir) / CODEX_HOME_DEFAULT_SOURCE_DIR / "AGENTS.md"
-    target_path = (codex_home_dir or CODEX_HOME_DIR) / "AGENTS.md"
     if not source_path.is_file():
-        _report(report, f"Codex home AGENTS.md source not found at {source_path}")
+        _report(report, f"{document_label} source not found at {source_path}")
         return False
 
     source_text = source_path.read_text(encoding="utf-8")
@@ -53,17 +68,17 @@ def ensure_openbase_agents_md(
     if target_path.exists() and not target_path.is_file():
         _report(
             report,
-            f"Codex home AGENTS.md already exists at {target_path}; "
+            f"{document_label} already exists at {target_path}; "
             "leaving it unchanged.",
         )
         return False
 
     if target_path.exists() and target_path.read_text(encoding="utf-8") == updated:
-        _report(report, f"Codex home AGENTS.md already configured at {target_path}")
+        _report(report, f"{document_label} already configured at {target_path}")
         return False
 
     target_path.write_text(updated, encoding="utf-8")
-    _report(report, f"Updated editable Codex home AGENTS.md at {target_path}")
+    _report(report, f"Updated editable {document_label} at {target_path}")
     return True
 
 

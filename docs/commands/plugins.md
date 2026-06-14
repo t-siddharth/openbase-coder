@@ -45,7 +45,7 @@ openbase-coder plugins add https://github.com/org/openbase-plugin --ref main
 Mutating plugin commands will:
 
 1. Update plugin registry and requirements under `~/.openbase/plugins/`
-2. Sync plugin-declared Claude skills into `~/.claude/skills`
+2. Sync plugin-declared Claude skills into `${CLAUDE_CONFIG_DIR:-~/.claude}/skills`
 3. Regenerate console plugin integration artifacts
 4. Restart managed launchd services
 

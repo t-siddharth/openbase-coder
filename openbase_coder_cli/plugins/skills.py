@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -8,7 +9,9 @@ import click
 from .models import PluginRecord
 from .store import load_skills_ownership, save_skills_ownership
 
-GLOBAL_SKILLS_DIR = Path.home() / ".claude" / "skills"
+GLOBAL_SKILLS_DIR = (
+    Path(os.getenv("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "skills"
+)
 
 
 def _copy_skill_source(source_path: Path, target_dir: Path) -> None:

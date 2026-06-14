@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from openbase_coder_cli.dispatcher_config import (
+    dispatcher_model,
     dispatcher_reasoning_effort,
     dispatcher_voice,
     super_agents_model,
@@ -40,8 +41,12 @@ DEFAULT_DISPATCHER_LABEL = "dispatcher"
 TURN_POLL_INTERVAL_SECONDS = 0.5
 
 
-def _default_model_name() -> str:
-    return os.getenv("CODEX_MODEL", DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL
+def _default_model_name(path: Path | None = None) -> str:
+    return (
+        dispatcher_model(path)
+        or os.getenv("CODEX_MODEL", DEFAULT_CODEX_MODEL).strip()
+        or DEFAULT_CODEX_MODEL
+    )
 
 
 def _super_agents_model_name(path: Path | None = None) -> str | None:
@@ -87,7 +92,6 @@ class SuperAgentsLiveKitClient:
         self._developer_instructions = developer_instructions or None
         self._approval_policy = approval_policy
         self._sandbox = sandbox
-        self._model_name = model_name or _default_model_name()
         self._service_tier = service_tier
         self._super_agent_name = _super_agent_name(
             super_agent_name
@@ -103,6 +107,7 @@ class SuperAgentsLiveKitClient:
             or os.getenv("LIVEKIT_DISPATCHER_CONFIG_PATH")
             or CODEX_DISPATCHER_CONFIG_PATH
         )
+        self._model_name = model_name or _default_model_name(self._dispatcher_config_path)
         self._super_agents_model_name = _super_agents_model_name(
             self._dispatcher_config_path
         )

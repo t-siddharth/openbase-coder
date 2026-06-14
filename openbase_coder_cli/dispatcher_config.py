@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from openbase_coder_cli.paths import CODEX_DISPATCHER_CONFIG_PATH
+from openbase_coder_cli.paths import CODEX_DISPATCHER_CONFIG_PATH, DEFAULT_ENV_FILE_PATH
 from openbase_coder_cli.stt_providers import (
     DEFAULT_STT_PROVIDER_ID,
     LOCAL_MLX_WHISPER_STT_PROVIDER_ID,
@@ -27,6 +27,26 @@ REASONING_EFFORTS = {"low", "medium", "high", "xhigh"}
 DISPATCHER_REASONING_EFFORT_KEY = "dispatcher_reasoning_effort"
 SUPER_AGENTS_REASONING_EFFORT_KEY = "super_agents_reasoning_effort"
 SUPER_AGENTS_MODEL_KEY = "super_agents_model"
+BACKEND_MODELS_KEY = "backend_models"
+DISPATCHER_MODEL_ROLE = "dispatcher"
+SUPER_AGENTS_MODEL_ROLE = "super_agents"
+CODING_BACKEND_ENV_KEY = "OPENBASE_CODING_BACKEND"
+LEGACY_CODEX_BACKEND_ENV_KEY = "OPENBASE_CODEX_BACKEND"
+CODEX_BACKEND = "codex"
+CLAUDE_AGENT_SDK_BACKEND = "claude-agent-sdk"
+CLAUDE_TUI_BACKEND = "claude-tui"
+BACKEND_ALIASES = {
+    "": CODEX_BACKEND,
+    "openai": CODEX_BACKEND,
+    "codex": CODEX_BACKEND,
+    "claude": CLAUDE_AGENT_SDK_BACKEND,
+    "claude-code": CLAUDE_AGENT_SDK_BACKEND,
+    "claude-agent": CLAUDE_AGENT_SDK_BACKEND,
+    "claude-agent-sdk": CLAUDE_AGENT_SDK_BACKEND,
+    "claude-sdk": CLAUDE_AGENT_SDK_BACKEND,
+    "claude-tui": CLAUDE_TUI_BACKEND,
+    "claude-code-tui": CLAUDE_TUI_BACKEND,
+}
 TTS_PROVIDER_KEY = "tts_provider"
 STT_PROVIDER_KEY = "stt_provider"
 DISPATCHER_VOICE_ID_KEY = "dispatcher_voice_id"
@@ -65,12 +85,48 @@ def set_super_agents_reasoning_effort(value: str, path: Path | None = None) -> P
 
 
 def super_agents_model(path: Path | None = None) -> str | None:
+    configured = backend_model(SUPER_AGENTS_MODEL_ROLE, path=path)
+    if configured:
+        return configured
     payload = read_dispatcher_config(path)
     configured = _optional_str(payload.get(SUPER_AGENTS_MODEL_KEY))
     if configured:
         return configured
     env_model = _optional_str(os.getenv("SUPER_AGENTS_MODEL"))
     return env_model
+
+
+def dispatcher_model(path: Path | None = None) -> str | None:
+    configured = backend_model(DISPATCHER_MODEL_ROLE, path=path)
+    if configured:
+        return configured
+    env_model = _optional_str(os.getenv("CODEX_MODEL"))
+    return env_model
+
+
+def backend_model(
+    role: str,
+    *,
+    backend: str | None = None,
+    path: Path | None = None,
+) -> str | None:
+    selected_backend = _normalize_backend(
+        backend or _configured_backend_from_environment()
+    )
+    payload = read_dispatcher_config(path)
+    backend_models = payload.get(BACKEND_MODELS_KEY)
+    if not isinstance(backend_models, dict):
+        return None
+    for backend_key in (selected_backend, _legacy_backend_key(selected_backend)):
+        if not backend_key:
+            continue
+        model_config = backend_models.get(backend_key)
+        if not isinstance(model_config, dict):
+            continue
+        configured = _optional_str(model_config.get(role))
+        if configured:
+            return configured
+    return None
 
 
 def set_super_agents_model(value: str, path: Path | None = None) -> Path:
@@ -232,6 +288,41 @@ def _set_reasoning_effort(key: str, value: str, path: Path | None = None) -> Pat
 
 def _optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
+
+
+def _configured_backend_from_environment() -> str:
+    return (
+        os.getenv(CODING_BACKEND_ENV_KEY)
+        or os.getenv(LEGACY_CODEX_BACKEND_ENV_KEY)
+        or _env_file_values(DEFAULT_ENV_FILE_PATH).get(CODING_BACKEND_ENV_KEY)
+        or _env_file_values(DEFAULT_ENV_FILE_PATH).get(LEGACY_CODEX_BACKEND_ENV_KEY)
+        or CODEX_BACKEND
+    )
+
+
+def _normalize_backend(value: str | None) -> str:
+    return BACKEND_ALIASES.get((value or "").strip().lower(), value or CODEX_BACKEND)
+
+
+def _legacy_backend_key(backend: str) -> str | None:
+    if backend == CLAUDE_AGENT_SDK_BACKEND:
+        return "claude-code"
+    if backend == CLAUDE_TUI_BACKEND:
+        return "claude-code-tui"
+    return None
+
+
+def _env_file_values(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
 
 
 def _write_dispatcher_config(payload: dict[str, Any], config_path: Path) -> None:

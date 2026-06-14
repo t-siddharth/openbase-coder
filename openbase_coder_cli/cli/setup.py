@@ -18,7 +18,10 @@ from openbase_coder_cli.backend_config import (
     SUPPORTED_BACKENDS,
 )
 from openbase_coder_cli.cli.node import run_workspace_package_command
-from openbase_coder_cli.codex_home_instructions import ensure_openbase_agents_md
+from openbase_coder_cli.codex_home_instructions import (
+    ensure_openbase_agents_md,
+    ensure_openbase_instruction_md,
+)
 from openbase_coder_cli.paths import (
     CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH,
     CODEX_DISPATCHER_CONFIG_PATH,
@@ -27,9 +30,15 @@ from openbase_coder_cli.paths import (
     CODEX_SUPER_AGENT_INSTRUCTIONS_PATH,
     DEFAULT_ENV_FILE_PATH,
     DEFAULT_WORKSPACE_DIR,
+    LEGACY_CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH,
     LEGACY_CODEX_DISPATCHER_CONFIG_PATH,
+    LEGACY_CODEX_DISPATCHER_INSTRUCTIONS_PATH,
+    LEGACY_CODEX_SUPER_AGENT_INSTRUCTIONS_PATH,
     NORMAL_CODEX_CONFIG_PATH,
     OPENBASE_BASE_DIR,
+    OPENBASE_CLAUDE_CONFIG_DIR,
+    OPENBASE_CLAUDE_JSON_PATH,
+    OPENBASE_CLAUDE_MD_PATH,
 )
 from openbase_coder_cli.services.installation import InstallationConfig
 from openbase_coder_cli.services.launchd import install_all_services
@@ -46,6 +55,14 @@ CODEX_HOME_DEFAULT_FILES = (
     ("VOICE_INSTRUCTIONS.md", CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH),
     ("DISPATCHER_INSTRUCTIONS.md", CODEX_DISPATCHER_INSTRUCTIONS_PATH),
     ("SUPER_AGENT_INSTRUCTIONS.md", CODEX_SUPER_AGENT_INSTRUCTIONS_PATH),
+)
+LEGACY_CODEX_HOME_DEFAULT_FILES = (
+    (
+        CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH,
+        LEGACY_CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH,
+    ),
+    (CODEX_DISPATCHER_INSTRUCTIONS_PATH, LEGACY_CODEX_DISPATCHER_INSTRUCTIONS_PATH),
+    (CODEX_SUPER_AGENT_INSTRUCTIONS_PATH, LEGACY_CODEX_SUPER_AGENT_INSTRUCTIONS_PATH),
 )
 THREAD_SYNC_EXCHANGE_DIR_NAME = "thread-sync"
 THREAD_SYNC_MARKER_FILE_NAME = "syncthing-folder-openbase-thread-sync.txt"
@@ -65,6 +82,11 @@ CODEX_HOME_PERMISSION_VALUES = (
 CODEX_HOME_DEFAULT_DISPATCHER_CONFIG = {
     "dispatcher_reasoning_effort": "low",
     "super_agents_reasoning_effort": "high",
+    "backend_models": {
+        "codex": {"dispatcher": "gpt-5.5", "super_agents": "gpt-5.5"},
+        "claude-agent-sdk": {"dispatcher": "sonnet", "super_agents": "sonnet"},
+        "claude-tui": {"dispatcher": "sonnet", "super_agents": "sonnet"},
+    },
 }
 CODING_BACKEND_OPTIONS = SUPPORTED_BACKENDS
 
@@ -174,6 +196,7 @@ def setup(
         _ensure_codex_home_config(workspace_dir, link_codex_config=True)
     else:
         _ensure_codex_home_config(workspace_dir)
+    _ensure_claude_config(workspace_dir)
 
     # --- Install/update user-facing CLI shim ---
     _install_cli_shim(workspace_dir)
@@ -420,8 +443,9 @@ def _symlink_codex_auth() -> None:
 
 
 def _ensure_codex_home_default_files(workspace_dir: str) -> None:
-    """Symlink Openbase Codex home instruction files to workspace defaults."""
+    """Create Openbase-managed agent instruction files."""
     CODEX_HOME_DIR.mkdir(parents=True, exist_ok=True)
+    OPENBASE_CLAUDE_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     defaults_dir = Path(workspace_dir) / CODEX_HOME_DEFAULT_SOURCE_DIR
 
     ensure_openbase_agents_md(
@@ -429,44 +453,84 @@ def _ensure_codex_home_default_files(workspace_dir: str) -> None:
         codex_home_dir=CODEX_HOME_DIR,
         report=click.echo,
     )
+    ensure_openbase_instruction_md(
+        workspace_dir,
+        target_path=OPENBASE_CLAUDE_MD_PATH,
+        document_label="Claude config CLAUDE.md",
+        report=click.echo,
+    )
 
     for resource_name, target_path in CODEX_HOME_DEFAULT_FILES:
-        if resource_name == "AGENTS.md":
-            continue
-
         source_path = defaults_dir / resource_name
         if not source_path.is_file():
-            click.echo(f"Codex home default source not found at {source_path}")
+            click.echo(f"Openbase instruction source not found at {source_path}")
             continue
 
-        if target_path.is_symlink():
-            if target_path.resolve() == source_path.resolve():
-                click.echo(f"Codex home default already linked at {target_path}")
-                continue
-            target_path.unlink()
-        elif target_path.exists():
-            if not target_path.is_file():
-                click.echo(
-                    f"Codex home default already exists at {target_path}; "
-                    "leaving it unchanged."
-                )
-                continue
+        _ensure_matching_symlink_or_file(
+            target_path=target_path,
+            source_path=source_path,
+            label="Openbase instruction",
+        )
 
-            try:
-                default_matches = target_path.read_bytes() == source_path.read_bytes()
-            except OSError:
-                default_matches = False
-            if not default_matches:
-                click.echo(
-                    f"Codex home default already exists at {target_path} and "
-                    "differs from the workspace default; leaving it unchanged."
-                )
-                continue
-            target_path.unlink()
+    for canonical_path, legacy_path in LEGACY_CODEX_HOME_DEFAULT_FILES:
+        _ensure_legacy_symlink(
+            legacy_path=legacy_path,
+            canonical_path=canonical_path,
+            label="legacy Codex home instruction",
+        )
 
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.symlink_to(source_path)
-        click.echo(f"Linked Codex home default {target_path} -> {source_path}")
+
+def _ensure_matching_symlink_or_file(
+    *,
+    target_path: Path,
+    source_path: Path,
+    label: str,
+) -> bool:
+    if target_path.is_symlink():
+        if target_path.resolve() == source_path.resolve():
+            click.echo(f"{label} already linked at {target_path}")
+            return False
+        target_path.unlink()
+    elif target_path.exists():
+        if not target_path.is_file():
+            click.echo(f"{label} already exists at {target_path}; leaving it unchanged.")
+            return False
+
+        try:
+            default_matches = target_path.read_bytes() == source_path.read_bytes()
+        except OSError:
+            default_matches = False
+        if not default_matches:
+            click.echo(
+                f"{label} already exists at {target_path} and differs from "
+                "the workspace default; leaving it unchanged."
+            )
+            return False
+        target_path.unlink()
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.symlink_to(source_path)
+    click.echo(f"Linked {label} {target_path} -> {source_path}")
+    return True
+
+
+def _ensure_legacy_symlink(
+    *,
+    legacy_path: Path,
+    canonical_path: Path,
+    label: str,
+) -> None:
+    if legacy_path == canonical_path:
+        return
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    if legacy_path.is_symlink():
+        if legacy_path.readlink() == canonical_path:
+            return
+        legacy_path.unlink()
+    elif legacy_path.exists():
+        return
+    legacy_path.symlink_to(canonical_path)
+    click.echo(f"Linked {label} {legacy_path} -> {canonical_path}")
 
 
 def _ensure_codex_home_dispatcher_config() -> None:
@@ -521,32 +585,49 @@ def _ensure_legacy_dispatcher_config_link() -> None:
 
 
 def _symlink_codex_home_skills(workspace_dir: str) -> None:
-    """Symlink workspace-owned skills into the Openbase Codex home."""
+    """Symlink workspace-owned skills into Openbase-managed agent homes."""
     source_root = Path(workspace_dir) / CODEX_HOME_SKILLS_SOURCE_DIR
     skill_sources = _workspace_skill_sources(source_root)
     if not skill_sources:
         click.echo(f"No workspace skills found at {source_root}")
         return
 
-    target_root = CODEX_HOME_DIR / "skills"
+    _symlink_skills_to_root(
+        skill_sources,
+        target_root=CODEX_HOME_DIR / "skills",
+        label="Codex home",
+    )
+    _symlink_skills_to_root(
+        skill_sources,
+        target_root=OPENBASE_CLAUDE_CONFIG_DIR / "skills",
+        label="Claude config",
+    )
+
+
+def _symlink_skills_to_root(
+    skill_sources: list[Path],
+    *,
+    target_root: Path,
+    label: str,
+) -> None:
     target_root.mkdir(parents=True, exist_ok=True)
 
     for source_path in skill_sources:
         target_path = target_root / source_path.name
         if target_path.is_symlink():
             if target_path.resolve() == source_path.resolve():
-                click.echo(f"Codex home skill already linked at {target_path}")
+                click.echo(f"{label} skill already linked at {target_path}")
                 continue
             target_path.unlink()
         elif target_path.exists():
             click.echo(
-                f"Codex home skill already exists at {target_path}; "
+                f"{label} skill already exists at {target_path}; "
                 "leaving it unchanged."
             )
             continue
 
         target_path.symlink_to(source_path)
-        click.echo(f"Linked Codex home skill {target_path} → {source_path}")
+        click.echo(f"Linked {label} skill {target_path} -> {source_path}")
 
 
 def _ensure_codex_home_config(
@@ -585,6 +666,59 @@ def _ensure_codex_home_config(
 
     config_path.write_text(updated, encoding="utf-8")
     click.echo(f"Configured Codex home config at {config_path}")
+
+
+def _ensure_claude_config(workspace_dir: str) -> None:
+    """Configure Openbase's Claude Code config dir."""
+    OPENBASE_CLAUDE_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    command_path, args = _super_agents_mcp_command(Path(workspace_dir))
+    if not command_path.is_file():
+        click.echo(
+            f"Super Agents MCP command not found at {command_path}; "
+            "writing the expected Claude MCP config path anyway."
+        )
+
+    existing = _read_json_object(OPENBASE_CLAUDE_JSON_PATH)
+    mcp_servers = existing.get("mcpServers")
+    if not isinstance(mcp_servers, dict):
+        mcp_servers = {}
+    updated = {
+        **existing,
+        "mcpServers": {
+            **mcp_servers,
+            "super-agents": {
+                "type": "stdio",
+                "command": str(command_path),
+                **({"args": args} if args else {}),
+                "env": {
+                    "CLAUDE_CONFIG_DIR": str(OPENBASE_CLAUDE_CONFIG_DIR),
+                    "SUPER_AGENTS_DEFAULT_CONFIG_PATH": str(
+                        CODEX_DISPATCHER_CONFIG_PATH
+                    ),
+                    "CODEX_SUPER_AGENT_INSTRUCTIONS_PATH": str(
+                        CODEX_SUPER_AGENT_INSTRUCTIONS_PATH
+                    ),
+                },
+            },
+        },
+    }
+    if updated == existing:
+        click.echo(f"Claude config already configured at {OPENBASE_CLAUDE_JSON_PATH}")
+        return
+
+    OPENBASE_CLAUDE_JSON_PATH.write_text(
+        json.dumps(updated, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    click.echo(f"Configured Claude MCP config at {OPENBASE_CLAUDE_JSON_PATH}")
+
+
+def _read_json_object(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _symlink_codex_home_config() -> None:
@@ -875,6 +1009,8 @@ def _ensure_env_file(
         f"# {LEGACY_CODEX_BACKEND_ENV_KEY} is still read as a fallback for older installs.",
         f"{CODING_BACKEND_ENV_KEY}={coding_backend or DEFAULT_CODING_BACKEND}",
         "# Claude backends apply to Super Agents UI-driver sessions; the voice dispatcher still uses codex-app-server.",
+        f"CLAUDE_CONFIG_DIR={OPENBASE_CLAUDE_CONFIG_DIR}",
+        f"SUPER_AGENTS_DEFAULT_CONFIG_PATH={CODEX_DISPATCHER_CONFIG_PATH}",
         "# SUPER_AGENTS_CLAUDE_TUI_CMD=claude",
         "# SUPER_AGENTS_CLAUDE_TUI_ARGS=",
         "# SUPER_AGENTS_CLAUDE_TUI_MODEL=sonnet",
@@ -927,6 +1063,10 @@ def _upsert_env_file_values(path: Path, values: dict[str, str]) -> None:
 def _missing_livekit_client_credential_values(path: Path) -> dict[str, str]:
     existing = _env_file_values(path)
     updates: dict[str, str] = {}
+    if not existing.get("CLAUDE_CONFIG_DIR"):
+        updates["CLAUDE_CONFIG_DIR"] = str(OPENBASE_CLAUDE_CONFIG_DIR)
+    if not existing.get("SUPER_AGENTS_DEFAULT_CONFIG_PATH"):
+        updates["SUPER_AGENTS_DEFAULT_CONFIG_PATH"] = str(CODEX_DISPATCHER_CONFIG_PATH)
     if not existing.get("LIVEKIT_CLIENT_API_KEY") or existing.get(
         "LIVEKIT_CLIENT_API_KEY"
     ) == existing.get("LIVEKIT_API_KEY"):

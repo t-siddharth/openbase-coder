@@ -29,18 +29,30 @@ def _write_skill(root: Path, name: str, content: str = "instructions") -> Path:
     return skill_dir
 
 
-def _patch_skill_homes(monkeypatch, normal_home: Path, openbase_home: Path) -> None:
+def _patch_skill_homes(
+    monkeypatch,
+    normal_home: Path,
+    openbase_home: Path,
+    claude_home: Path | None = None,
+) -> None:
     monkeypatch.setattr(views, "_home_skills_dir", lambda: normal_home / "skills")
     monkeypatch.setattr(views, "CODEX_HOME_DIR", openbase_home)
+    monkeypatch.setattr(
+        views,
+        "OPENBASE_CLAUDE_CONFIG_DIR",
+        claude_home or normal_home.parent / "openbase-claude",
+    )
 
 
 def test_skills_list_uses_normal_and_openbase_codex_homes(tmp_path: Path, monkeypatch):
     normal_home = tmp_path / "normal-codex"
     openbase_home = tmp_path / "openbase-codex"
+    claude_home = tmp_path / "openbase-claude"
     _write_skill(normal_home, "normal-skill")
     _write_skill(openbase_home, "openbase-skill")
+    _write_skill(claude_home, "claude-skill")
 
-    _patch_skill_homes(monkeypatch, normal_home, openbase_home)
+    _patch_skill_homes(monkeypatch, normal_home, openbase_home, claude_home)
 
     response = views.skills_list(_request("get", "/api/skills/"))
 
@@ -53,6 +65,11 @@ def test_skills_list_uses_normal_and_openbase_codex_homes(tmp_path: Path, monkey
     assert sections["voice_coder"]["skills_dir"] == str(openbase_home / "skills")
     assert [skill["name"] for skill in sections["voice_coder"]["skills"]] == [
         "openbase-skill"
+    ]
+    assert sections["claude"]["label"] == "Openbase Claude skills"
+    assert sections["claude"]["skills_dir"] == str(claude_home / "skills")
+    assert [skill["name"] for skill in sections["claude"]["skills"]] == [
+        "claude-skill"
     ]
 
 

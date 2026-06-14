@@ -38,10 +38,11 @@ Useful keys:
 | --- | --- |
 | `dispatcher_reasoning_effort` | Default reasoning effort for dispatcher turns |
 | `super_agents_reasoning_effort` | Default reasoning effort for Super Agents turns |
-| `super_agents_model` | Default model for Super Agents backends, such as `opus` |
+| `backend_models` | Backend-specific dispatcher and Super Agents model defaults for `codex`, `claude-agent-sdk`, and `claude-tui` |
+| `super_agents_model` | Legacy default model for Super Agents backends, such as `opus` |
 
 `SUPER_AGENTS_MODEL` is still accepted as a fallback when `super_agents_model`
-is unset.
+and `backend_models.<backend>.super_agents` are unset.
 
 ## Agent/Voice Variables
 

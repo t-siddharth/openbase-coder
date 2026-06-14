@@ -106,6 +106,8 @@ from openbase_coder_cli.paths import (
     DEFAULT_LOG_DIR,
     NORMAL_CODEX_AGENTS_MD_PATH,
     NORMAL_CODEX_HOME_DIR,
+    OPENBASE_CLAUDE_CONFIG_DIR,
+    OPENBASE_CLAUDE_MD_PATH,
 )
 
 
@@ -119,6 +121,8 @@ def _sync_agents_md_compat_globals() -> None:
     _agents_md.CODEX_SUPER_AGENT_INSTRUCTIONS_PATH = CODEX_SUPER_AGENT_INSTRUCTIONS_PATH
     _agents_md.NORMAL_CODEX_AGENTS_MD_PATH = NORMAL_CODEX_AGENTS_MD_PATH
     _agents_md.NORMAL_CODEX_HOME_DIR = NORMAL_CODEX_HOME_DIR
+    _agents_md.OPENBASE_CLAUDE_CONFIG_DIR = OPENBASE_CLAUDE_CONFIG_DIR
+    _agents_md.OPENBASE_CLAUDE_MD_PATH = OPENBASE_CLAUDE_MD_PATH
 
 
 def _sync_livekit_compat_globals() -> None:
@@ -136,6 +140,7 @@ def _sync_livekit_compat_globals() -> None:
 
 def _sync_skills_compat_globals() -> None:
     _skills.CODEX_HOME_DIR = CODEX_HOME_DIR
+    _skills.OPENBASE_CLAUDE_CONFIG_DIR = OPENBASE_CLAUDE_CONFIG_DIR
     _skills._home_skills_dir = _home_skills_dir
 
 

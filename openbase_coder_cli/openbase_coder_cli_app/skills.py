@@ -9,7 +9,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from openbase_coder_cli.paths import CODEX_HOME_DIR
+from openbase_coder_cli.paths import CODEX_HOME_DIR, OPENBASE_CLAUDE_CONFIG_DIR
 
 
 def _home_skills_dir() -> Path:
@@ -20,12 +20,18 @@ def _voice_coder_skills_dir() -> Path:
     return CODEX_HOME_DIR / "skills"
 
 
+def _claude_config_skills_dir() -> Path:
+    return OPENBASE_CLAUDE_CONFIG_DIR / "skills"
+
+
 def _skills_dir(project_path: str | None, scope: str = "home") -> Path:
     """Return the skills directory for a project or global scope."""
     if project_path:
         return Path(project_path).expanduser().resolve() / ".agents" / "skills"
     if scope in {"voice_coder", "openbase_codex"}:
         return _voice_coder_skills_dir()
+    if scope in {"claude", "openbase_claude"}:
+        return _claude_config_skills_dir()
     if scope in {"home", "normal_codex"}:
         return _home_skills_dir()
     raise ValueError("invalid skill scope")
@@ -42,6 +48,11 @@ def _skill_scope_payload() -> list[dict[str, str]]:
             "key": "voice_coder",
             "label": "Openbase Codex skills",
             "skills_dir": str(_voice_coder_skills_dir()),
+        },
+        {
+            "key": "claude",
+            "label": "Openbase Claude skills",
+            "skills_dir": str(_claude_config_skills_dir()),
         },
     ]
 
