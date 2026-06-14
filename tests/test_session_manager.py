@@ -235,6 +235,7 @@ class FakeBackendSessionClient:
                 "read_by_label",
                 {
                     "thread_id": input_data.thread_id,
+                    "cwd": input_data.cwd,
                     "include_turns": include_turns,
                     "max_items": input_data.max_items,
                 },
@@ -569,6 +570,7 @@ def test_read_thread_reads_claude_code_backend_turns(tmp_path: Path) -> None:
                             "createdAt": "2026-06-19T20:05:00.000Z",
                             "finishedAt": "2026-06-19T20:05:10.000Z",
                             "reasoningEffort": "low",
+                            "lastUsefulMessage": "Hi from Claude Code.",
                         }
                     ],
                 }
@@ -584,11 +586,58 @@ def test_read_thread_reads_claude_code_backend_turns(tmp_path: Path) -> None:
     assert thread.status == "waiting"
     assert [turn.run_id for turn in thread.run_history] == ["t_1"]
     assert thread.run_history[0].message == "Say hi"
+    assert thread.run_history[0].accumulated_output == "Hi from Claude Code."
     assert thread.run_history[0].reasoning_effort == "low"
     assert client.calls == [
         (
             "read_by_label",
-            {"thread_id": "s_dispatcher", "include_turns": True, "max_items": 25},
+            {
+                "thread_id": "s_dispatcher",
+                "cwd": None,
+                "include_turns": True,
+                "max_items": 25,
+            },
+        )
+    ]
+
+
+def test_resume_thread_without_developer_instructions_is_backend_session_noop(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    client = FakeBackendSessionClient(
+        {
+            "read_by_label": [
+                {
+                    "threadId": "s_grace",
+                    "backend": "claude_code",
+                    "session": {
+                        "id": "s_grace",
+                        "name": "elon-musk-report",
+                        "agentName": "Grace",
+                        "cwd": str(project_dir),
+                        "status": "waiting",
+                    },
+                }
+            ]
+        }
+    )
+
+    asyncio.run(
+        _manager(client).resume_thread_without_developer_instructions(
+            "s_grace",
+            str(project_dir),
+        )
+    )
+
+    assert client.calls == [
+        (
+            "read_by_label",
+            {
+                "thread_id": "s_grace",
+                "cwd": str(project_dir),
+                "include_turns": False,
+                "max_items": None,
+            },
         )
     ]
 

@@ -26,6 +26,7 @@ from openbase_coder_cli.livekit_voice_route import (
     publish_transfer_to_thread,
     stable_super_agent_voice_id,
     super_agent_voice_id_for_context,
+    warm_livekit_dispatcher_thread,
 )
 from openbase_coder_cli.tts_providers import KOKORO_PROVIDER_ID
 
@@ -99,6 +100,45 @@ class FakeSessionManager:
         self.calls.append((thread_id, directory))
         if self.fail:
             raise RuntimeError("resume failed")
+
+
+def test_warm_livekit_dispatcher_uses_configured_super_agents_client(tmp_path: Path, monkeypatch):
+    calls = []
+    instruction_path = tmp_path / "dispatcher.md"
+    instruction_path.write_text("dispatcher says random fruit is persimmon\n", encoding="utf-8")
+
+    class FakeSuperAgentsLiveKitClient:
+        def __init__(self, **kwargs):
+            calls.append(("init", kwargs))
+
+        async def prepare(self):
+            calls.append(("prepare", {}))
+            return "dispatcher-1"
+
+        async def aclose(self):
+            calls.append(("close", {}))
+
+    monkeypatch.setenv("LIVEKIT_CODEX_THREAD_CWD", str(tmp_path))
+    monkeypatch.setenv("LIVEKIT_CODEX_THREAD_STATE_PATH", str(tmp_path / "route.json"))
+    monkeypatch.setattr(voice_route, "CODEX_DISPATCHER_INSTRUCTIONS_PATH", instruction_path)
+
+    from openbase_coder_cli.livekit_agent import super_agents_client
+
+    monkeypatch.setattr(
+        super_agents_client,
+        "SuperAgentsLiveKitClient",
+        FakeSuperAgentsLiveKitClient,
+    )
+
+    result = asyncio.run(warm_livekit_dispatcher_thread(timeout_seconds=0))
+
+    assert result == "dispatcher-1"
+    assert calls[0][0] == "init"
+    init_kwargs = calls[0][1]
+    assert init_kwargs["cwd"] == str(tmp_path)
+    assert init_kwargs["state_path"] == str(tmp_path / "route.json")
+    assert init_kwargs["developer_instructions"] == "dispatcher says random fruit is persimmon"
+    assert calls[1:] == [("prepare", {}), ("close", {})]
 
 
 def test_super_agent_voices_use_builtin_catalog_pool(monkeypatch):

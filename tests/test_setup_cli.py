@@ -33,6 +33,11 @@ def _patch_openbase_agent_paths(monkeypatch, tmp_path: Path) -> tuple[Path, Path
     )
     monkeypatch.setattr(
         setup_cli,
+        "NORMAL_CLAUDE_CONFIG_DIR",
+        tmp_path / "normal_claude",
+    )
+    monkeypatch.setattr(
+        setup_cli,
         "CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH",
         instructions / "VOICE_INSTRUCTIONS.md",
     )
@@ -670,6 +675,9 @@ def test_ensure_claude_config_installs_super_agents_mcp(tmp_path, monkeypatch) -
     assert settings["permissions"]["defaultMode"] == "bypassPermissions"
     assert settings["skipDangerousModePermissionPrompt"] is True
     assert settings["skipAutoPermissionPrompt"] is True
+    assert settings["claudeMdExcludes"] == [
+        str(setup_cli.NORMAL_CLAUDE_CONFIG_DIR / "CLAUDE.md")
+    ]
 
 
 def test_ensure_claude_settings_seeds_from_normal_claude_settings(
@@ -691,6 +699,7 @@ def test_ensure_claude_settings_seeds_from_normal_claude_settings(
                 },
                 "skipDangerousModePermissionPrompt": False,
                 "skipAutoPermissionPrompt": False,
+                "claudeMdExcludes": ["/tmp/other-team/CLAUDE.md"],
             }
         ),
         encoding="utf-8",
@@ -708,6 +717,10 @@ def test_ensure_claude_settings_seeds_from_normal_claude_settings(
     }
     assert settings["skipDangerousModePermissionPrompt"] is True
     assert settings["skipAutoPermissionPrompt"] is True
+    assert settings["claudeMdExcludes"] == [
+        "/tmp/other-team/CLAUDE.md",
+        str(setup_cli.NORMAL_CLAUDE_CONFIG_DIR / "CLAUDE.md"),
+    ]
 
 
 def test_ensure_claude_auth_bridge_runs_login_when_requested(monkeypatch) -> None:

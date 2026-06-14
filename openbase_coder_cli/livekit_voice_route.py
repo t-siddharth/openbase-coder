@@ -394,13 +394,14 @@ async def warm_livekit_dispatcher_thread(
     timeout_seconds: float = 15.0,
     retry_interval_seconds: float = 0.5,
 ) -> str:
-    """Ensure the dispatcher Codex thread exists and route state has its id."""
-    from openbase_coder_cli.livekit_agent.codex_app_client import CodexAppServerClient
+    """Ensure the configured dispatcher backend thread exists and route state has its id."""
+    from openbase_coder_cli.livekit_agent.super_agents_client import (
+        SuperAgentsLiveKitClient,
+    )
 
     deadline = time.monotonic() + max(timeout_seconds, 0.0)
     while True:
-        client = CodexAppServerClient(
-            ws_url=os.getenv("CODEX_APP_SERVER_URL", "ws://127.0.0.1:4500"),
+        client = SuperAgentsLiveKitClient(
             cwd=os.path.expanduser(
                 os.getenv("LIVEKIT_CODEX_THREAD_CWD", str(Path.home()))
             ),

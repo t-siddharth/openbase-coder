@@ -622,6 +622,15 @@ class CodexAppServerSessionManager:
         *,
         developer_instructions: str | None | object = _USE_SUPER_AGENT_INSTRUCTIONS,
     ) -> None:
+        if self._uses_backend_session_api():
+            read_by_label = getattr(self._client, "read_by_label", None)
+            if callable(read_by_label):
+                await read_by_label(
+                    LabelQueryInput(thread_id=thread_id, cwd=directory),
+                    include_turns=False,
+                )
+            return
+
         await self._client.ensure_connected()
         params: dict[str, Any] = {
             "threadId": thread_id,

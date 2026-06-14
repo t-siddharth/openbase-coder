@@ -49,6 +49,7 @@ from openbase_coder_cli.paths import (
     LEGACY_CODEX_DISPATCHER_CONFIG_PATH,
     LEGACY_CODEX_DISPATCHER_INSTRUCTIONS_PATH,
     LEGACY_CODEX_SUPER_AGENT_INSTRUCTIONS_PATH,
+    NORMAL_CLAUDE_CONFIG_DIR,
     NORMAL_CLAUDE_SETTINGS_PATH,
     NORMAL_CODEX_CONFIG_PATH,
     OPENBASE_BASE_DIR,
@@ -943,7 +944,18 @@ def _merge_claude_settings(settings: dict[str, object]) -> dict[str, object]:
     }
     updated["skipDangerousModePermissionPrompt"] = True
     updated["skipAutoPermissionPrompt"] = True
+    updated["claudeMdExcludes"] = _merge_claude_md_excludes(
+        updated.get("claudeMdExcludes")
+    )
     return updated
+
+
+def _merge_claude_md_excludes(value: object) -> list[str]:
+    excludes = [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+    normal_claude_md_path = str((NORMAL_CLAUDE_CONFIG_DIR / "CLAUDE.md").expanduser())
+    if normal_claude_md_path not in excludes:
+        excludes.append(normal_claude_md_path)
+    return excludes
 
 
 def _ensure_claude_auth_bridge(*, login_if_needed: bool = False) -> None:
