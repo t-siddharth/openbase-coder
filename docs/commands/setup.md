@@ -14,7 +14,7 @@ Setup can choose the default coding backend:
 
 ```bash
 openbase-coder setup --backend codex
-openbase-coder setup --backend openbase-cloud
+openbase-coder setup --backend openbase_cloud
 openbase-coder setup --backend claude-code
 ```
 
@@ -22,7 +22,7 @@ New env files default to `codex` when `--backend` is omitted.
 Existing env files are left unchanged unless `--backend` is passed.
 
 - `codex`: default native Codex app-server with OpenAI models.
-- `openbase-cloud`: Codex-compatible sessions through the Openbase Cloud model
+- `openbase_cloud`: Codex-compatible sessions through the Openbase Cloud model
   proxy with Openbase login.
 - `claude-code`: Claude Code backend using local Claude auth/billing for Super
   Agents UI-driver sessions.

@@ -86,8 +86,11 @@ Firefox. Sign in with the same Openbase Cloud account you use in the iOS app.
 Switch coding sessions to Openbase Cloud:
 
 ```bash
-openbase-coder backend use openbase-cloud
+openbase-coder backend use openbase_cloud
 ```
+
+Use the underscore spelling, `openbase_cloud`, for compatibility with cloud
+images that have an older `openbase-coder` CLI installed.
 
 This avoids requiring local OpenAI, Anthropic, Cartesia, or AssemblyAI account
 setup for the basic voice-agent path.
@@ -121,7 +124,7 @@ If `doctor` reports missing Openbase Cloud audio configuration on an older
 image, refresh setup in Openbase Cloud mode and start services again:
 
 ```bash
-openbase-coder setup --skip-clone --backend openbase-cloud --audio-provider openbase-cloud
+openbase-coder setup --skip-clone --backend openbase_cloud --audio-provider openbase-cloud
 openbase-coder services start
 openbase-coder doctor
 ```
