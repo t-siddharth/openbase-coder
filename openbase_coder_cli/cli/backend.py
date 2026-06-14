@@ -55,7 +55,7 @@ def status(env_file: Path) -> None:
 
 
 @backend.command("use")
-@click.argument("backend_name")
+@click.argument("backend_name", nargs=-1)
 @click.option(
     "--env-file",
     type=click.Path(path_type=Path),
@@ -63,10 +63,10 @@ def status(env_file: Path) -> None:
     show_default=True,
     help="Openbase .env file to update.",
 )
-def use_backend(backend_name: str, env_file: Path) -> None:
+def use_backend(backend_name: tuple[str, ...], env_file: Path) -> None:
     """Persist the selected coding backend."""
     try:
-        normalized = normalize_backend(backend_name)
+        normalized = normalize_backend(" ".join(backend_name))
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     write_backend(env_file, normalized)

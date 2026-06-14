@@ -57,6 +57,7 @@ from openbase_coder_cli.openbase_coder_cli_app.views import (
     routines_list,
     routines_run_due,
     service_status,
+    service_tier_settings,
     skill_detail,
     skills_list,
     skills_symlink,
@@ -201,6 +202,11 @@ urlpatterns = [
         "settings/reasoning/",
         reasoning_settings,
         name="reasoning-settings",
+    ),
+    path(
+        "settings/service-tier/",
+        service_tier_settings,
+        name="service-tier-settings",
     ),
     path(
         "settings/env/",

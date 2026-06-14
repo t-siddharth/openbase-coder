@@ -128,10 +128,6 @@ CODEX_HOME_DEFAULT_DISPATCHER_CONFIG = {
     "super_agents_reasoning_effort": "high",
     "backend_models": {
         "codex": {"dispatcher": "gpt-5.5", "super_agents": "gpt-5.5"},
-        "openbase_cloud": {
-            "dispatcher": "openbase-codex",
-            "super_agents": "openbase-codex",
-        },
         "claude_code": {"dispatcher": "opus", "super_agents": "opus"},
     },
 }

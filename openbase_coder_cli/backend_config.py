@@ -11,6 +11,7 @@ BACKEND_ALIASES = {
     "codex": CODEX_BACKEND,
     "openai": CODEX_BACKEND,
     "openbase": OPENBASE_CLOUD_BACKEND,
+    "openbase cloud": OPENBASE_CLOUD_BACKEND,
     "openbase-cloud": OPENBASE_CLOUD_BACKEND,
     "openbase_cloud": OPENBASE_CLOUD_BACKEND,
     "cloud": OPENBASE_CLOUD_BACKEND,
@@ -27,13 +28,22 @@ BACKEND_ALIASES = {
 
 
 def normalize_backend(value: str | None) -> str:
-    raw = (value or "").strip().lower()
+    raw = _normalize_backend_alias(value)
     if not raw:
         return DEFAULT_CODING_BACKEND
+    aliases = {
+        _normalize_backend_alias(alias): backend
+        for alias, backend in BACKEND_ALIASES.items()
+    }
     try:
-        return BACKEND_ALIASES[raw]
+        return aliases[raw]
     except KeyError as exc:
         supported = ", ".join(SUPPORTED_BACKENDS)
         raise ValueError(
             f"Unsupported backend: {value}. Supported backends: {supported}."
         ) from exc
+
+
+def _normalize_backend_alias(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    return " ".join(raw.replace("_", " ").replace("-", " ").split())

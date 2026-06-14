@@ -49,7 +49,7 @@ def test_coding_backend_settings_defaults_when_env_file_missing(
     ]
 
 
-def test_coding_backend_settings_persists_backend(
+def test_coding_backend_settings_persists_openbase_cloud_selection(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -67,6 +67,9 @@ def test_coding_backend_settings_persists_backend(
 
     assert response.status_code == 200
     assert response.data["backend"] == "openbase_cloud"
+    assert response.data["configured_backend"] == "openbase_cloud"
+    assert response.data["codex_provider"] == "openbase_cloud"
+    assert "Openbase Cloud model proxy" in response.data["backend_note"]
     assert response.data["changed"] is True
     assert response.data["restart_required"] is True
     assert "dispatcher/MCP host" in response.data["restart_hint"]

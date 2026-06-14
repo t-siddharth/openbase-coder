@@ -47,10 +47,21 @@ def _restart_hint(backend: str) -> str:
     return "Restart or recreate the dispatcher/MCP host for Claude Code to pick up the change; keep Openbase services running."
 
 
+def _backend_note(backend: str) -> str | None:
+    if backend == OPENBASE_CLOUD_BACKEND:
+        return "Codex is configured to use the Openbase Cloud model proxy."
+    return None
+
+
 def _backend_payload(*, changed: bool = False) -> dict:
-    backend = read_backend(DEFAULT_ENV_FILE_PATH)
+    configured_backend = read_backend(DEFAULT_ENV_FILE_PATH)
     return {
-        "backend": backend,
+        "backend": configured_backend,
+        "configured_backend": configured_backend,
+        "codex_provider": "openbase_cloud"
+        if configured_backend == OPENBASE_CLOUD_BACKEND
+        else "direct",
+        "backend_note": _backend_note(configured_backend),
         "default_backend": DEFAULT_CODING_BACKEND,
         "supported_backends": [
             {
@@ -62,7 +73,7 @@ def _backend_payload(*, changed: bool = False) -> dict:
         "env_file_exists": DEFAULT_ENV_FILE_PATH.is_file(),
         "changed": changed,
         "restart_required": changed,
-        "restart_hint": _restart_hint(backend),
+        "restart_hint": _restart_hint(configured_backend),
     }
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -228,8 +229,8 @@ def _backfill_agent_entries_from_super_agents_state(
             cwd=_optional_str(match.get("cwd")),
             voice_id=voice.voice_id if voice else _optional_str(match.get("voice_id")),
             voice_name=voice.name if voice else _optional_str(match.get("voice_name")),
-            kind="codex_thread",
-            source="super_agents_state",
+            kind=_optional_str(match.get("kind")) or "codex_thread",
+            source=_optional_str(match.get("source")) or "super_agents_state",
         )
         if entry is not None:
             entries.append(entry)
@@ -337,6 +338,22 @@ def _super_agents_state_path() -> Path:
 def _super_agents_state_agent_matches(
     normalized_agent_name: str,
 ) -> list[dict[str, Any]]:
+    return sorted(
+        [
+            *_json_super_agents_state_agent_matches(normalized_agent_name),
+            *_claude_code_state_agent_matches(normalized_agent_name),
+        ],
+        key=lambda match: (
+            str(match.get("last_started_at") or ""),
+            str(match.get("updated_at") or ""),
+        ),
+        reverse=True,
+    )
+
+
+def _json_super_agents_state_agent_matches(
+    normalized_agent_name: str,
+) -> list[dict[str, Any]]:
     path = _super_agents_state_path()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -366,16 +383,64 @@ def _super_agents_state_agent_matches(
                 "last_status": _optional_str(value.get("lastStatus")),
                 "updated_at": _optional_str(value.get("updatedAt")),
                 "last_started_at": _optional_str(value.get("lastStartedAt")),
+                "kind": "codex_thread",
+                "source": "super_agents_state",
             }
         )
-    return sorted(
-        matches,
-        key=lambda match: (
-            str(match.get("last_started_at") or ""),
-            str(match.get("updated_at") or ""),
-        ),
-        reverse=True,
-    )
+    return matches
+
+
+def _claude_code_state_path() -> Path:
+    configured_home = os.environ.get("SUPER_AGENTS_CLAUDE_CODE_HOME")
+    if configured_home:
+        return Path(configured_home).expanduser() / "state.sqlite3"
+    return Path.home() / ".local" / "share" / "super-agents-claude-code" / "state.sqlite3"
+
+
+def _claude_code_state_agent_matches(
+    normalized_agent_name: str,
+) -> list[dict[str, Any]]:
+    path = _claude_code_state_path()
+    if not path.is_file():
+        return []
+    try:
+        with sqlite3.connect(path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                select id, name, agent_name, cwd, status, updated_at, created_at
+                from sessions
+                where lower(trim(agent_name)) = ?
+                order by updated_at desc
+                limit 20
+                """,
+                (normalized_agent_name,),
+            ).fetchall()
+    except sqlite3.Error:
+        logger.debug(
+            "Unable to read Claude Code Super Agents state path=%s",
+            path,
+            exc_info=True,
+        )
+        return []
+
+    return [
+        {
+            "thread_id": _optional_str(row["id"]),
+            "agent_name": _optional_str(row["agent_name"]),
+            "normalized_agent_name": normalized_agent_name,
+            "label": _optional_str(row["name"]),
+            "cwd": _optional_str(row["cwd"]),
+            "voice_id": None,
+            "voice_name": None,
+            "last_status": _optional_str(row["status"]),
+            "updated_at": _optional_str(row["updated_at"]),
+            "last_started_at": _optional_str(row["created_at"]),
+            "kind": "codex_thread",
+            "source": "claude_code_state",
+        }
+        for row in rows
+    ]
 
 
 def _entry_log_payload(entry: VoiceHistoryEntry) -> dict[str, Any]:

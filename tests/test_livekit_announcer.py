@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 from types import SimpleNamespace
 
 os.environ.setdefault("OPENBASE_CODER_CLI_SECRET_KEY", "test-secret")
@@ -465,6 +466,71 @@ def test_user_say_api_backfills_agent_voice_from_super_agents_state(
     messages = "\n".join(record.message for record in caplog.records)
     assert "livekit_voice_assignment_backfilled" in messages
     assert "source=super_agents_state" in messages
+
+
+def test_user_say_api_backfills_agent_voice_from_claude_code_state(
+    monkeypatch, tmp_path, caplog
+):
+    monkeypatch.setenv("OPENBASE_CODER_CLI_DATA_DIR", str(tmp_path / "openbase"))
+    claude_home = tmp_path / "super-agents-claude-code"
+    claude_home.mkdir()
+    monkeypatch.setenv("SUPER_AGENTS_CLAUDE_CODE_HOME", str(claude_home))
+    with sqlite3.connect(claude_home / "state.sqlite3") as conn:
+        conn.execute(
+            """
+            create table sessions (
+                id text primary key,
+                name text not null,
+                agent_name text,
+                cwd text not null,
+                status text not null,
+                created_at text not null,
+                updated_at text not null
+            )
+            """
+        )
+        conn.execute(
+            """
+            insert into sessions (
+                id, name, agent_name, cwd, status, created_at, updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "s_cindy",
+                "fish-markdown",
+                "Cindy",
+                "/tmp/fish-project",
+                "waiting",
+                "2026-06-20T02:58:57.899Z",
+                "2026-06-20T03:00:21.134Z",
+            ),
+        )
+    caplog.set_level(logging.INFO)
+
+    async def fake_publish(text, *, room_name=None, voice_id=None):
+        assert text == "hello"
+        assert room_name is None
+        assert voice_id
+        return SimpleNamespace(
+            message_id="announcer-1",
+            room_name="room-1",
+        )
+
+    monkeypatch.setattr(views, "publish_announcer_message", fake_publish)
+
+    request = APIRequestFactory().post(
+        "/api/user/say/",
+        {"agent_name": "cindy", "text": "hello"},
+        format="json",
+    )
+    force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+
+    response = views.user_say(request)
+
+    assert response.status_code == 202
+    messages = "\n".join(record.message for record in caplog.records)
+    assert "livekit_voice_assignment_backfilled" in messages
+    assert "source=claude_code_state" in messages
 
 
 def test_user_say_api_rejects_unknown_agent(tmp_path, monkeypatch):

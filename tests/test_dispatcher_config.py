@@ -48,7 +48,7 @@ def test_backend_model_uses_env_file_backend(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.delenv("OPENBASE_CODEX_BACKEND", raising=False)
     monkeypatch.setattr(dispatcher_config, "DEFAULT_ENV_FILE_PATH", env_file)
 
-    assert dispatcher_config.super_agents_model(config_path) == "openbase-codex"
+    assert dispatcher_config.super_agents_model(config_path) == "gpt-5.5"
 
 
 def test_super_agents_model_ignores_legacy_key(
@@ -62,3 +62,25 @@ def test_super_agents_model_ignores_legacy_key(
     monkeypatch.setenv("OPENBASE_CODING_BACKEND", "claude_code")
 
     assert dispatcher_config.super_agents_model(config_path) is None
+
+
+def test_codex_service_tier_uses_config_before_env(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "dispatcher-config.json"
+    env_file = tmp_path / ".env"
+    config_path.write_text(
+        json.dumps({"codex_service_tier": "standard"}),
+        encoding="utf-8",
+    )
+    env_file.write_text("CODEX_SERVICE_TIER=fast\n", encoding="utf-8")
+    monkeypatch.setattr(dispatcher_config, "DEFAULT_ENV_FILE_PATH", env_file)
+    monkeypatch.setenv("CODEX_SERVICE_TIER", "fast")
+
+    assert dispatcher_config.codex_service_tier(config_path) == "standard"
+
+
+def test_set_codex_service_tier_persists_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "dispatcher-config.json"
+
+    dispatcher_config.set_codex_service_tier("standard", config_path)
+
+    assert json.loads(config_path.read_text(encoding="utf-8"))["codex_service_tier"] == "standard"

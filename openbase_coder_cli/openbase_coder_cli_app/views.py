@@ -81,6 +81,9 @@ from openbase_coder_cli.openbase_coder_cli_app.routines import (
     routines_list,
     routines_run_due,
 )
+from openbase_coder_cli.openbase_coder_cli_app.service_tier_settings import (
+    service_tier_settings,
+)
 from openbase_coder_cli.openbase_coder_cli_app.services_views import (
     launchctl_ignored_settings,
     launchctl_service_action,
@@ -289,6 +292,7 @@ __all__ = [
     "routines_list",
     "routines_run_due",
     "service_status",
+    "service_tier_settings",
     "thread_device_sync_status",
     "set_dispatcher_voice",
     "skill_detail",

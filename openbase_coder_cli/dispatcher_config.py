@@ -26,6 +26,9 @@ from openbase_coder_cli.tts_providers import (
 REASONING_EFFORTS = {"low", "medium", "high", "xhigh"}
 DISPATCHER_REASONING_EFFORT_KEY = "dispatcher_reasoning_effort"
 SUPER_AGENTS_REASONING_EFFORT_KEY = "super_agents_reasoning_effort"
+CODEX_SERVICE_TIER_KEY = "codex_service_tier"
+CODEX_SERVICE_TIERS = {"fast", "standard"}
+DEFAULT_CODEX_SERVICE_TIER = "fast"
 BACKEND_MODELS_KEY = "backend_models"
 DISPATCHER_MODEL_ROLE = "dispatcher"
 SUPER_AGENTS_MODEL_ROLE = "super_agents"
@@ -89,6 +92,31 @@ def set_super_agents_reasoning_effort(value: str, path: Path | None = None) -> P
     return _set_reasoning_effort(SUPER_AGENTS_REASONING_EFFORT_KEY, value, path)
 
 
+def codex_service_tier(path: Path | None = None) -> str:
+    configured = _optional_str(read_dispatcher_config(path).get(CODEX_SERVICE_TIER_KEY))
+    if configured in CODEX_SERVICE_TIERS:
+        return configured
+    env_value = _optional_str(os.getenv("CODEX_SERVICE_TIER"))
+    if env_value in CODEX_SERVICE_TIERS:
+        return env_value
+    env_file_value = _optional_str(_env_file_values(DEFAULT_ENV_FILE_PATH).get("CODEX_SERVICE_TIER"))
+    if env_file_value in CODEX_SERVICE_TIERS:
+        return env_file_value
+    return DEFAULT_CODEX_SERVICE_TIER
+
+
+def set_codex_service_tier(value: str, path: Path | None = None) -> Path:
+    normalized = value.strip().lower()
+    if normalized not in CODEX_SERVICE_TIERS:
+        allowed = ", ".join(sorted(CODEX_SERVICE_TIERS))
+        raise ValueError(f"Codex service tier must be one of: {allowed}.")
+
+    config_path = path or CODEX_DISPATCHER_CONFIG_PATH
+    payload = {**read_dispatcher_config(config_path), CODEX_SERVICE_TIER_KEY: normalized}
+    _write_dispatcher_config(payload, config_path)
+    return config_path
+
+
 def super_agents_model(path: Path | None = None) -> str | None:
     return backend_model(SUPER_AGENTS_MODEL_ROLE, path=path)
 
@@ -103,8 +131,10 @@ def backend_model(
     backend: str | None = None,
     path: Path | None = None,
 ) -> str | None:
-    selected_backend = _normalize_backend(
-        backend or _configured_backend_from_environment()
+    selected_backend = _execution_backend(
+        _normalize_backend(
+            backend or _configured_backend_from_environment()
+        )
     )
     payload = read_dispatcher_config(path)
     backend_models = payload.get(BACKEND_MODELS_KEY)
@@ -315,6 +345,10 @@ def _configured_backend_from_environment() -> str:
 
 def _normalize_backend(value: str | None) -> str:
     return BACKEND_ALIASES.get((value or "").strip().lower(), value or CODEX_BACKEND)
+
+
+def _execution_backend(backend: str) -> str:
+    return CODEX_BACKEND if backend == OPENBASE_CLOUD_BACKEND else backend
 
 
 def _env_file_values(path: Path) -> dict[str, str]:

@@ -53,6 +53,20 @@ def test_backend_use_creates_env_file(tmp_path) -> None:
     assert 'env_key = "OPENBASE_CLOUD_CODEX_API_KEY"' in config
 
 
+def test_backend_use_accepts_spoken_openbase_cloud_alias(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+
+    result = CliRunner().invoke(
+        main, ["backend", "use", "openbase", "cloud", "--env-file", str(env_file)]
+    )
+
+    assert result.exit_code == 0
+    assert "Backend set to openbase_cloud" in result.output
+    assert "OPENBASE_CODING_BACKEND=openbase_cloud" in env_file.read_text(
+        encoding="utf-8"
+    )
+
+
 def test_backend_use_codex_removes_openbase_cloud_provider(tmp_path) -> None:
     env_file = tmp_path / ".env"
     config_path = tmp_path / "codex_home" / "config.toml"
