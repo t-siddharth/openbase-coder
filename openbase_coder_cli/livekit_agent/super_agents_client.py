@@ -36,25 +36,18 @@ from openbase_coder_cli.paths import CODEX_DISPATCHER_CONFIG_PATH
 logger = logging.getLogger(__name__)
 DISPATCH_TIMING_LOG = "dispatch_timing"
 DEFAULT_CODEX_MODEL = "gpt-5.5"
-SUPER_AGENTS_MODEL_ENV = "SUPER_AGENTS_MODEL"
 DEFAULT_DISPATCHER_LABEL = "dispatcher"
 TURN_POLL_INTERVAL_SECONDS = 0.5
 
 
-def _default_model_name(path: Path | None = None) -> str:
-    return (
-        dispatcher_model(path)
-        or os.getenv("CODEX_MODEL", DEFAULT_CODEX_MODEL).strip()
-        or DEFAULT_CODEX_MODEL
-    )
-
-
-def _super_agents_model_name(path: Path | None = None) -> str | None:
-    return (
-        super_agents_model(path)
-        or os.getenv(SUPER_AGENTS_MODEL_ENV, "").strip()
-        or None
-    )
+def _model_name_for_role(
+    path: Path | None = None,
+    *,
+    use_super_agent_model: bool = False,
+) -> str | None:
+    if use_super_agent_model:
+        return super_agents_model(path)
+    return dispatcher_model(path) or DEFAULT_CODEX_MODEL
 
 
 def _is_super_agents_mcp_server(name: str) -> bool:
@@ -107,9 +100,9 @@ class SuperAgentsLiveKitClient:
             or os.getenv("LIVEKIT_DISPATCHER_CONFIG_PATH")
             or CODEX_DISPATCHER_CONFIG_PATH
         )
-        self._model_name = model_name or _default_model_name(self._dispatcher_config_path)
-        self._super_agents_model_name = _super_agents_model_name(
-            self._dispatcher_config_path
+        self._model_name = model_name or _model_name_for_role(
+            self._dispatcher_config_path,
+            use_super_agent_model=self._use_super_agent_reasoning,
         )
         self._backend_client = backend_client or self._client_from_environment()
         self._register_backend_callback()
@@ -345,8 +338,8 @@ class SuperAgentsLiveKitClient:
         }
         if self._backend_is_codex():
             turn_input["model"] = self._model_name
-        elif self._super_agents_model_name:
-            turn_input["model"] = self._super_agents_model_name
+        elif self._model_name:
+            turn_input["model"] = self._model_name
         if reasoning_effort:
             turn_input["reasoningEffort"] = reasoning_effort
         if effective_developer_instructions := self._turn_developer_instructions(
@@ -698,8 +691,8 @@ class SuperAgentsLiveKitClient:
         }
         if self._backend_is_codex():
             params["model"] = self._model_name
-        elif self._super_agents_model_name:
-            params["model"] = self._super_agents_model_name
+        elif self._model_name:
+            params["model"] = self._model_name
         if developer_instructions := self._thread_developer_instructions():
             params["developerInstructions"] = developer_instructions
         started = await self._backend_client.start_thread(params)

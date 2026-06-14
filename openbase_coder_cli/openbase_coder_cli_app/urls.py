@@ -50,6 +50,7 @@ from openbase_coder_cli.openbase_coder_cli_app.views import (
     project_reports_file,
     project_reports_tags,
     project_status,
+    reasoning_settings,
     recent_projects,
     routine_detail,
     routines_list,
@@ -193,6 +194,11 @@ urlpatterns = [
         "settings/coding-backend/",
         coding_backend_settings,
         name="coding-backend-settings",
+    ),
+    path(
+        "settings/reasoning/",
+        reasoning_settings,
+        name="reasoning-settings",
     ),
     path(
         "settings/env/",

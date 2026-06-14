@@ -24,18 +24,39 @@ def test_returns_full_text_when_nothing_was_delivered():
     assert _undelivered_suffix("", "hello") == "hello"
 
 
-def test_default_model_name_ignores_claude_backend_env(monkeypatch):
+def test_model_name_for_role_ignores_env_model_fallback(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENBASE_CODEX_BACKEND", "claude-agent-sdk")
     monkeypatch.setenv("CODEX_MODEL", "gpt-5.5")
+    config_path = tmp_path / "missing-dispatcher-config.json"
 
-    assert client_module._default_model_name() == "gpt-5.5"
+    assert client_module._model_name_for_role(config_path) == "gpt-5.5"
 
 
-def test_default_model_name_ignores_legacy_claude_model_override(monkeypatch):
-    monkeypatch.setenv("OPENBASE_CODEX_BACKEND", "claude-agent-sdk")
-    monkeypatch.setenv("CODEX_CLAUDE_MODEL", "claude-custom")
+def test_model_name_for_role_uses_backend_and_role(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "dispatcher-config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "backend_models": {
+                    "claude_code": {
+                        "dispatcher": "haiku",
+                        "super_agents": "opus",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENBASE_CODING_BACKEND", "claude_code")
 
-    assert client_module._default_model_name() == "gpt-5.5"
+    assert client_module._model_name_for_role(config_path) == "haiku"
+    assert (
+        client_module._model_name_for_role(
+            config_path,
+            use_super_agent_model=True,
+        )
+        == "opus"
+    )
 
 
 def test_returns_only_new_suffix_when_final_text_extends_streamed_text():
@@ -286,6 +307,12 @@ def test_target_thread_uses_super_agents_reasoning_instead_of_dispatcher(
             {
                 "dispatcher_reasoning_effort": "low",
                 "super_agents_reasoning_effort": "high",
+                "backend_models": {
+                    "codex": {
+                        "dispatcher": "gpt-dispatcher",
+                        "super_agents": "gpt-super-agent",
+                    }
+                },
             }
         ),
         encoding="utf-8",
@@ -297,6 +324,7 @@ def test_target_thread_uses_super_agents_reasoning_instead_of_dispatcher(
                 ws_url="ws://example.invalid",
                 cwd="/tmp/project",
                 dispatcher_config_path=config_path,
+                developer_instructions="target instructions",
                 persist_thread=False,
                 initial_thread_id="thread-1",
                 use_super_agent_reasoning=True,
@@ -326,6 +354,7 @@ def test_target_thread_uses_super_agents_reasoning_instead_of_dispatcher(
     request = asyncio.run(check())
 
     assert request["effort"] == "high"
+    assert request["collaborationMode"]["settings"]["model"] == "gpt-super-agent"
 
 
 def test_livekit_turn_instructions_are_sent_per_turn_only():

@@ -349,17 +349,17 @@ def test_ensure_codex_home_dispatcher_config_creates_default(
 
     assert json.loads(config_path.read_text(encoding="utf-8")) == {
         "backend_models": {
-            "claude-agent-sdk": {
-                "dispatcher": "sonnet",
-                "super_agents": "sonnet",
-            },
-            "claude-tui": {
-                "dispatcher": "sonnet",
-                "super_agents": "sonnet",
+            "claude_code": {
+                "dispatcher": "opus",
+                "super_agents": "opus",
             },
             "codex": {
                 "dispatcher": "gpt-5.5",
                 "super_agents": "gpt-5.5",
+            },
+            "openbase_cloud": {
+                "dispatcher": "openbase-codex",
+                "super_agents": "openbase-codex",
             },
         },
         "dispatcher_voice_id": "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",
@@ -438,7 +438,7 @@ def test_ensure_codex_home_dispatcher_config_migrates_legacy_file(
     legacy_path.write_text(
         "{\n"
         '  "dispatcher_reasoning_effort": "medium",\n'
-        '  "super_agents_model": "opus"\n'
+        '  "super_agents_reasoning_effort": "xhigh"\n'
         "}\n",
         encoding="utf-8",
     )
@@ -449,7 +449,7 @@ def test_ensure_codex_home_dispatcher_config_migrates_legacy_file(
 
     assert json.loads(config_path.read_text(encoding="utf-8")) == {
         "dispatcher_reasoning_effort": "medium",
-        "super_agents_model": "opus",
+        "super_agents_reasoning_effort": "xhigh",
     }
     assert legacy_path.is_symlink()
     assert legacy_path.resolve() == config_path.resolve()
@@ -723,9 +723,9 @@ def test_ensure_env_file_documents_coding_backend_default(tmp_path) -> None:
     content = env_file.read_text(encoding="utf-8")
     assert "OPENBASE_CODING_BACKEND=codex" in content
     assert "# OPENBASE_CODEX_BACKEND is still read as a fallback" in content
-    assert "# Claude backends apply to Super Agents UI-driver sessions" in content
+    assert "# Claude Code applies to Super Agents UI-driver sessions" in content
     assert "CODEX_CLAUDE_" not in content
-    assert "# SUPER_AGENTS_CLAUDE_TUI_CMD=claude" in content
+    assert "SUPER_AGENTS_CLAUDE_TUI_CMD" not in content
     assert "CLAUDE_CONFIG_DIR=" in content
     assert "SUPER_AGENTS_DEFAULT_CONFIG_PATH=" in content
     assert "CODEX_MODEL=gpt-5.5" in content
@@ -738,10 +738,10 @@ def test_ensure_env_file_can_select_backend(tmp_path) -> None:
         str(env_file),
         assembly_ai_api_key="",
         cartesia_api_key="",
-        coding_backend="claude-tui",
+        coding_backend="openbase-cloud",
     )
 
-    assert "OPENBASE_CODING_BACKEND=claude-tui" in env_file.read_text(encoding="utf-8")
+    assert "OPENBASE_CODING_BACKEND=openbase_cloud" in env_file.read_text(encoding="utf-8")
 
 
 def test_ensure_env_file_updates_existing_backend_only_when_requested(tmp_path) -> None:
@@ -759,13 +759,13 @@ def test_ensure_env_file_updates_existing_backend_only_when_requested(tmp_path) 
         str(env_file),
         assembly_ai_api_key="",
         cartesia_api_key="",
-        coding_backend="claude-agent-sdk",
+        coding_backend="claude-code",
     )
 
     content = env_file.read_text(encoding="utf-8")
     assert "KEEP_ME=1" in content
     assert "OPENBASE_CODEX_BACKEND=codex" in content
-    assert "OPENBASE_CODING_BACKEND=claude-agent-sdk" in content
+    assert "OPENBASE_CODING_BACKEND=claude_code" in content
 
 
 def test_ensure_thread_sync_exchange_dir_creates_syncthing_files(
@@ -889,7 +889,7 @@ def test_setup_configures_tailscale_serve(tmp_path, monkeypatch) -> None:
             "--env-file",
             str(env_file),
             "--backend",
-            "claude-tui",
+            "claude-code",
             "--skip-clone",
         ],
     )

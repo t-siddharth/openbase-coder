@@ -14,19 +14,18 @@ Setup can choose the default coding backend:
 
 ```bash
 openbase-coder setup --backend codex
-openbase-coder setup --backend claude-agent-sdk
-openbase-coder setup --backend claude-tui
+openbase-coder setup --backend openbase-cloud
+openbase-coder setup --backend claude-code
 ```
 
 New env files default to `codex` when `--backend` is omitted.
 Existing env files are left unchanged unless `--backend` is passed.
 
 - `codex`: default native Codex app-server with OpenAI models.
-- `claude-agent-sdk`: Claude Agent SDK backend. It uses the Claude Agent SDK
-  directly for Super Agents UI-driver sessions and uses local Claude
-  auth/billing instead of `ANTHROPIC_API_KEY`.
-- `claude-tui`: uses the local Claude Code CLI/TUI login directly, does not
-  require an Anthropic API key, and is used by Super Agents UI-driver sessions.
+- `openbase-cloud`: Codex-compatible sessions through the Openbase Cloud model
+  proxy with Openbase login.
+- `claude-code`: Claude Code backend using local Claude auth/billing for Super
+  Agents UI-driver sessions.
 
 For first-time setup without installing the CLI first, prefer `uvx`:
 
@@ -63,7 +62,7 @@ uvx --python 3.13 openbase-coder setup
 11. Initializes `cli` with `uv sync` and LiveKit model downloads.
 12. Configures `~/.openbase/codex_home/config.toml` with full Codex local access (`sandbox_mode = "danger-full-access"`), disabled permission prompts, and the Super Agents MCP server. With `--link-codex-config`, this path is first linked to `~/.codex/config.toml`. The MCP command prefers the selected workspace's venv executable and falls back to the resolved local `uv` path.
 13. Configures `~/.openbase/claude_config/.claude.json` with the Super Agents MCP server and writes `CLAUDE_CONFIG_DIR=~/.openbase/claude_config` into the shared `.env`.
-14. Writes Codex app-server defaults like `CODEX_MODEL=gpt-5.5`, `CODEX_MODEL_REASONING_EFFORT=high`, `CODEX_SERVICE_TIER=fast`, `CODEX_APP_SERVER_URL`, and `LIVEKIT_CODEX_THREAD_CWD` into the shared `.env`.
+14. Writes Codex app-server defaults like `CODEX_MODEL=gpt-5.5`, `CODEX_MODEL_REASONING_EFFORT=high`, `CODEX_SERVICE_TIER=fast`, `CODEX_APP_SERVER_URL`, and `LIVEKIT_CODEX_THREAD_CWD` into the shared `.env`. When `OPENBASE_CODING_BACKEND=openbase_cloud`, the app-server service switches to the Openbase Cloud model proxy at startup.
 15. Builds `console`.
 16. Installs background services (launchd on macOS, systemd user units on Linux) unless skipped.
 17. Configures Tailscale Serve routes for the iOS app:

@@ -20,11 +20,10 @@ Openbase CLI reads configuration from environment variables (usually loaded from
 | `CODEX_MODEL`                             | No       | `gpt-5.5`                                        | Codex app-server model                      |
 | `CODEX_MODEL_REASONING_EFFORT`            | No       | `high`                                           | Codex app-server reasoning effort           |
 | `CODEX_SERVICE_TIER`                      | No       | `fast`                                           | Codex app-server service tier               |
-| `OPENBASE_CODING_BACKEND`                 | No       | `codex` from new setup env files                 | `codex`, `claude-agent-sdk`, or `claude-tui` backend |
+| `OPENBASE_CODING_BACKEND`                 | No       | `codex` from new setup env files                 | `codex`, `openbase_cloud`, or `claude_code` backend |
 | `OPENBASE_CODEX_BACKEND`                  | No       | none                                             | Legacy fallback for `OPENBASE_CODING_BACKEND` |
-| `SUPER_AGENTS_CLAUDE_TUI_CMD`             | No       | `claude`                                         | Claude Code TUI command for Super Agents    |
-| `SUPER_AGENTS_CLAUDE_TUI_ARGS`            | No       | none                                             | Extra Claude Code TUI arguments             |
-| `SUPER_AGENTS_CLAUDE_TUI_MODEL`           | No       | none                                             | Claude Code TUI model                       |
+| `OPENBASE_CLOUD_LLM_BASE_URL`             | No       | `<WEB_BACKEND_URL>/api/openbase/llm/openai/v1`   | Openbase Cloud Responses-compatible proxy base URL |
+| `OPENBASE_CLOUD_CODEX_MODEL`              | No       | `openbase-codex`                                 | Model name used by the Openbase Cloud backend |
 
 ## Dispatcher Config
 
@@ -38,11 +37,7 @@ Useful keys:
 | --- | --- |
 | `dispatcher_reasoning_effort` | Default reasoning effort for dispatcher turns |
 | `super_agents_reasoning_effort` | Default reasoning effort for Super Agents turns |
-| `backend_models` | Backend-specific dispatcher and Super Agents model defaults for `codex`, `claude-agent-sdk`, and `claude-tui` |
-| `super_agents_model` | Legacy default model for Super Agents backends, such as `opus` |
-
-`SUPER_AGENTS_MODEL` is still accepted as a fallback when `super_agents_model`
-and `backend_models.<backend>.super_agents` are unset.
+| `backend_models` | Backend-specific dispatcher and Super Agents model defaults for `codex`, `openbase_cloud`, and `claude_code` |
 
 ## Agent/Voice Variables
 

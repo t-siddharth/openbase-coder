@@ -220,17 +220,17 @@ def super_agents_reasoning(level: str | None) -> None:
 @user.command("super-agents-model")
 @click.argument("model", required=False)
 def super_agents_model_command(model: str | None) -> None:
-    """Show or set the Super Agents default model."""
+    """Show or set the current backend's Super Agents model."""
     if model is None:
         current = super_agents_model() or "backend default"
-        click.echo(f"Super Agents model: {current}")
+        click.echo(f"Current backend Super Agents model: {current}")
         return
 
     try:
         set_super_agents_model(model)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    click.echo(f"Super Agents model set to {' '.join(model.split())}.")
+    click.echo(f"Current backend Super Agents model set to {' '.join(model.split())}.")
 
 
 @user.command("transfer-to-thread")

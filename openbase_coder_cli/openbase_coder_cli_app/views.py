@@ -63,6 +63,9 @@ from openbase_coder_cli.openbase_coder_cli_app.projects import (
     project_status,
     recent_projects,
 )
+from openbase_coder_cli.openbase_coder_cli_app.reasoning_settings import (
+    reasoning_settings,
+)
 from openbase_coder_cli.openbase_coder_cli_app.reports import (
     all_project_reports,
     global_reports_projects,
@@ -279,6 +282,7 @@ __all__ = [
     "project_reports_tags",
     "project_status",
     "recent_projects",
+    "reasoning_settings",
     "routine_detail",
     "routines_list",
     "routines_run_due",

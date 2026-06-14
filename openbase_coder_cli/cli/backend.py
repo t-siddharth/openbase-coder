@@ -67,13 +67,13 @@ def use_backend(backend_name: str, env_file: Path) -> None:
         raise click.ClickException(str(exc)) from exc
     write_backend(env_file, normalized)
     click.echo(f"Backend set to {normalized} in {env_file}.")
-    if normalized == "codex":
+    if normalized in {"codex", "openbase_cloud"}:
         click.echo(
             "Restart or recreate the dispatcher/MCP host for Super Agents to pick up the change."
         )
     else:
         click.echo(
-            "Restart or recreate the dispatcher/MCP host for the Claude backend to pick up the change; keep Openbase services running."
+            "Restart or recreate the dispatcher/MCP host for Claude Code to pick up the change; keep Openbase services running."
         )
 
 

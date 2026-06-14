@@ -14,6 +14,7 @@ from openbase_coder_cli.dispatcher_config import (
     dispatcher_model,
     dispatcher_reasoning_effort,
     dispatcher_voice,
+    super_agents_model,
     super_agents_reasoning_effort,
 )
 from openbase_coder_cli.livekit_agent.codex_thread_state import (
@@ -57,12 +58,14 @@ _undelivered_suffix = _turn_undelivered_suffix
 _speech_excerpt = _turn_speech_excerpt
 
 
-def _default_model_name(path: Path | None = None) -> str:
-    return (
-        dispatcher_model(path)
-        or os.getenv("CODEX_MODEL", DEFAULT_CODEX_MODEL).strip()
-        or DEFAULT_CODEX_MODEL
-    )
+def _model_name_for_role(
+    path: Path | None = None,
+    *,
+    use_super_agent_model: bool = False,
+) -> str:
+    if use_super_agent_model:
+        return super_agents_model(path) or DEFAULT_CODEX_MODEL
+    return dispatcher_model(path) or DEFAULT_CODEX_MODEL
 
 
 class CodexAppServerClient(CodexTransportMixin):
@@ -105,7 +108,10 @@ class CodexAppServerClient(CodexTransportMixin):
             or os.getenv("LIVEKIT_DISPATCHER_CONFIG_PATH")
             or CODEX_DISPATCHER_CONFIG_PATH
         )
-        self._model_name = model_name or _default_model_name(self._dispatcher_config_path)
+        self._model_name = model_name or _model_name_for_role(
+            self._dispatcher_config_path,
+            use_super_agent_model=self._use_super_agent_reasoning,
+        )
 
         self._ws: Any | None = None
         self._reader_task: asyncio.Task[None] | None = None

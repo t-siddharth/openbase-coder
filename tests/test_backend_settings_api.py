@@ -44,8 +44,8 @@ def test_coding_backend_settings_defaults_when_env_file_missing(
     assert response.data["restart_required"] is False
     assert [option["id"] for option in response.data["supported_backends"]] == [
         "codex",
-        "claude-agent-sdk",
-        "claude-tui",
+        "openbase_cloud",
+        "claude_code",
     ]
 
 
@@ -61,19 +61,19 @@ def test_coding_backend_settings_persists_backend(
         _authenticated_request(
             "PUT",
             "/api/settings/coding-backend/",
-            {"backend": "claude-tui"},
+            {"backend": "openbase_cloud"},
         )
     )
 
     assert response.status_code == 200
-    assert response.data["backend"] == "claude-tui"
+    assert response.data["backend"] == "openbase_cloud"
     assert response.data["changed"] is True
     assert response.data["restart_required"] is True
     assert "dispatcher/MCP host" in response.data["restart_hint"]
     content = env_file.read_text(encoding="utf-8")
     assert "KEEP_ME=1" in content
     assert "OPENBASE_CODEX_BACKEND=codex" in content
-    assert "OPENBASE_CODING_BACKEND=claude-tui" in content
+    assert "OPENBASE_CODING_BACKEND=openbase_cloud" in content
 
 
 def test_coding_backend_settings_reads_legacy_backend(
@@ -89,7 +89,7 @@ def test_coding_backend_settings_reads_legacy_backend(
     )
 
     assert response.status_code == 200
-    assert response.data["backend"] == "claude-agent-sdk"
+    assert response.data["backend"] == "claude_code"
 
 
 def test_coding_backend_settings_rejects_unsupported_backend(

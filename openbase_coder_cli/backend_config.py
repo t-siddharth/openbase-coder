@@ -1,19 +1,28 @@
 from __future__ import annotations
 
-SUPPORTED_BACKENDS = ("codex", "claude-agent-sdk", "claude-tui")
+CODEX_BACKEND = "codex"
+OPENBASE_CLOUD_BACKEND = "openbase_cloud"
+CLAUDE_CODE_BACKEND = "claude_code"
+SUPPORTED_BACKENDS = (CODEX_BACKEND, OPENBASE_CLOUD_BACKEND, CLAUDE_CODE_BACKEND)
 DEFAULT_CODING_BACKEND = "codex"
 CODING_BACKEND_ENV_KEY = "OPENBASE_CODING_BACKEND"
 LEGACY_CODEX_BACKEND_ENV_KEY = "OPENBASE_CODEX_BACKEND"
 BACKEND_ALIASES = {
-    "codex": "codex",
-    "openai": "codex",
-    "claude": "claude-agent-sdk",
-    "claude-code": "claude-agent-sdk",
-    "claude-agent": "claude-agent-sdk",
-    "claude-agent-sdk": "claude-agent-sdk",
-    "claude-sdk": "claude-agent-sdk",
-    "claude-tui": "claude-tui",
-    "claude-code-tui": "claude-tui",
+    "codex": CODEX_BACKEND,
+    "openai": CODEX_BACKEND,
+    "openbase": OPENBASE_CLOUD_BACKEND,
+    "openbase-cloud": OPENBASE_CLOUD_BACKEND,
+    "openbase_cloud": OPENBASE_CLOUD_BACKEND,
+    "cloud": OPENBASE_CLOUD_BACKEND,
+    "claude": CLAUDE_CODE_BACKEND,
+    "claude-code": CLAUDE_CODE_BACKEND,
+    "claude_code": CLAUDE_CODE_BACKEND,
+    "claude-agent": CLAUDE_CODE_BACKEND,
+    "claude-agent-sdk": CLAUDE_CODE_BACKEND,
+    "claude_agent_sdk": CLAUDE_CODE_BACKEND,
+    "claude-sdk": CLAUDE_CODE_BACKEND,
+    "claude-tui": CLAUDE_CODE_BACKEND,
+    "claude-code-tui": CLAUDE_CODE_BACKEND,
 }
 
 

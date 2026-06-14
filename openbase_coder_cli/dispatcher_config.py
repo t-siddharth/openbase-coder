@@ -26,26 +26,31 @@ from openbase_coder_cli.tts_providers import (
 REASONING_EFFORTS = {"low", "medium", "high", "xhigh"}
 DISPATCHER_REASONING_EFFORT_KEY = "dispatcher_reasoning_effort"
 SUPER_AGENTS_REASONING_EFFORT_KEY = "super_agents_reasoning_effort"
-SUPER_AGENTS_MODEL_KEY = "super_agents_model"
 BACKEND_MODELS_KEY = "backend_models"
 DISPATCHER_MODEL_ROLE = "dispatcher"
 SUPER_AGENTS_MODEL_ROLE = "super_agents"
 CODING_BACKEND_ENV_KEY = "OPENBASE_CODING_BACKEND"
 LEGACY_CODEX_BACKEND_ENV_KEY = "OPENBASE_CODEX_BACKEND"
 CODEX_BACKEND = "codex"
-CLAUDE_AGENT_SDK_BACKEND = "claude-agent-sdk"
-CLAUDE_TUI_BACKEND = "claude-tui"
+OPENBASE_CLOUD_BACKEND = "openbase_cloud"
+CLAUDE_CODE_BACKEND = "claude_code"
 BACKEND_ALIASES = {
     "": CODEX_BACKEND,
     "openai": CODEX_BACKEND,
     "codex": CODEX_BACKEND,
-    "claude": CLAUDE_AGENT_SDK_BACKEND,
-    "claude-code": CLAUDE_AGENT_SDK_BACKEND,
-    "claude-agent": CLAUDE_AGENT_SDK_BACKEND,
-    "claude-agent-sdk": CLAUDE_AGENT_SDK_BACKEND,
-    "claude-sdk": CLAUDE_AGENT_SDK_BACKEND,
-    "claude-tui": CLAUDE_TUI_BACKEND,
-    "claude-code-tui": CLAUDE_TUI_BACKEND,
+    "openbase": OPENBASE_CLOUD_BACKEND,
+    "openbase-cloud": OPENBASE_CLOUD_BACKEND,
+    "openbase_cloud": OPENBASE_CLOUD_BACKEND,
+    "cloud": OPENBASE_CLOUD_BACKEND,
+    "claude": CLAUDE_CODE_BACKEND,
+    "claude-code": CLAUDE_CODE_BACKEND,
+    "claude_code": CLAUDE_CODE_BACKEND,
+    "claude-agent": CLAUDE_CODE_BACKEND,
+    "claude-agent-sdk": CLAUDE_CODE_BACKEND,
+    "claude_agent_sdk": CLAUDE_CODE_BACKEND,
+    "claude-sdk": CLAUDE_CODE_BACKEND,
+    "claude-tui": CLAUDE_CODE_BACKEND,
+    "claude-code-tui": CLAUDE_CODE_BACKEND,
 }
 TTS_PROVIDER_KEY = "tts_provider"
 STT_PROVIDER_KEY = "stt_provider"
@@ -85,23 +90,11 @@ def set_super_agents_reasoning_effort(value: str, path: Path | None = None) -> P
 
 
 def super_agents_model(path: Path | None = None) -> str | None:
-    configured = backend_model(SUPER_AGENTS_MODEL_ROLE, path=path)
-    if configured:
-        return configured
-    payload = read_dispatcher_config(path)
-    configured = _optional_str(payload.get(SUPER_AGENTS_MODEL_KEY))
-    if configured:
-        return configured
-    env_model = _optional_str(os.getenv("SUPER_AGENTS_MODEL"))
-    return env_model
+    return backend_model(SUPER_AGENTS_MODEL_ROLE, path=path)
 
 
 def dispatcher_model(path: Path | None = None) -> str | None:
-    configured = backend_model(DISPATCHER_MODEL_ROLE, path=path)
-    if configured:
-        return configured
-    env_model = _optional_str(os.getenv("CODEX_MODEL"))
-    return env_model
+    return backend_model(DISPATCHER_MODEL_ROLE, path=path)
 
 
 def backend_model(
@@ -117,27 +110,47 @@ def backend_model(
     backend_models = payload.get(BACKEND_MODELS_KEY)
     if not isinstance(backend_models, dict):
         return None
-    for backend_key in (selected_backend, _legacy_backend_key(selected_backend)):
-        if not backend_key:
-            continue
-        model_config = backend_models.get(backend_key)
-        if not isinstance(model_config, dict):
-            continue
-        configured = _optional_str(model_config.get(role))
-        if configured:
-            return configured
+    model_config = backend_models.get(selected_backend)
+    if not isinstance(model_config, dict):
+        return None
+    configured = _optional_str(model_config.get(role))
+    if configured:
+        return configured
     return None
 
 
 def set_super_agents_model(value: str, path: Path | None = None) -> Path:
+    return set_backend_model(SUPER_AGENTS_MODEL_ROLE, value, path=path)
+
+
+def set_backend_model(
+    role: str,
+    value: str,
+    *,
+    backend: str | None = None,
+    path: Path | None = None,
+) -> Path:
+    if role not in {DISPATCHER_MODEL_ROLE, SUPER_AGENTS_MODEL_ROLE}:
+        raise ValueError("Model role must be dispatcher or super_agents.")
     normalized = " ".join(value.split())
     if not normalized:
-        raise ValueError("Super Agents model cannot be blank.")
+        raise ValueError("Model cannot be blank.")
+    selected_backend = _normalize_backend(
+        backend or _configured_backend_from_environment()
+    )
     config_path = path or CODEX_DISPATCHER_CONFIG_PATH
+    payload = read_dispatcher_config(config_path)
+    backend_models = payload.get(BACKEND_MODELS_KEY)
+    if not isinstance(backend_models, dict):
+        backend_models = {}
+    model_config = backend_models.get(selected_backend)
+    if not isinstance(model_config, dict):
+        model_config = {}
+    backend_models[selected_backend] = {**model_config, role: normalized}
     _write_dispatcher_config(
         {
-            **read_dispatcher_config(config_path),
-            SUPER_AGENTS_MODEL_KEY: normalized,
+            **payload,
+            BACKEND_MODELS_KEY: backend_models,
         },
         config_path,
     )
@@ -302,14 +315,6 @@ def _configured_backend_from_environment() -> str:
 
 def _normalize_backend(value: str | None) -> str:
     return BACKEND_ALIASES.get((value or "").strip().lower(), value or CODEX_BACKEND)
-
-
-def _legacy_backend_key(backend: str) -> str | None:
-    if backend == CLAUDE_AGENT_SDK_BACKEND:
-        return "claude-code"
-    if backend == CLAUDE_TUI_BACKEND:
-        return "claude-code-tui"
-    return None
 
 
 def _env_file_values(path: Path) -> dict[str, str]:

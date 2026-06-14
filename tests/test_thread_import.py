@@ -764,7 +764,9 @@ def test_mcp_super_agents_model_tools_share_cli_config(
     assert result["model"] == "opus"
     assert result["applies_to"] == "next Super Agents turn"
     assert (
-        json.loads(config_path.read_text(encoding="utf-8"))["super_agents_model"]
+        json.loads(config_path.read_text(encoding="utf-8"))["backend_models"]["codex"][
+            "super_agents"
+        ]
         == "opus"
     )
 

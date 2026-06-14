@@ -430,7 +430,9 @@ def test_super_agents_model_sets_config_file(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "set to opus" in result.output
     assert (
-        json.loads(config_path.read_text(encoding="utf-8"))["super_agents_model"]
+        json.loads(config_path.read_text(encoding="utf-8"))["backend_models"]["codex"][
+            "super_agents"
+        ]
         == "opus"
     )
 

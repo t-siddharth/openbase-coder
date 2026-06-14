@@ -116,7 +116,7 @@ class CodexThreadImportTools(MCPToolset):
         }
 
     def get_super_agents_model(self) -> dict[str, Any]:
-        """Show the default model used by new Super Agents turns."""
+        """Show the current backend model used by new Super Agents turns."""
         model = dispatcher_config.super_agents_model()
         return {
             "model": model,
@@ -125,7 +125,7 @@ class CodexThreadImportTools(MCPToolset):
         }
 
     def set_super_agents_model(self, model: str) -> dict[str, Any]:
-        """Set the default model used by new Super Agents turns."""
+        """Set the current backend model used by new Super Agents turns."""
         config_path = dispatcher_config.set_super_agents_model(model)
         normalized = dispatcher_config.super_agents_model(config_path)
         return {

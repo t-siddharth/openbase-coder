@@ -13,7 +13,7 @@ def test_backend_model_uses_env_backend(tmp_path: Path, monkeypatch) -> None:
             {
                 "backend_models": {
                     "codex": {"dispatcher": "gpt-5.5", "super_agents": "gpt-5.5"},
-                    "claude-agent-sdk": {
+                    "claude_code": {
                         "dispatcher": "sonnet",
                         "super_agents": "opus",
                     },
@@ -22,7 +22,7 @@ def test_backend_model_uses_env_backend(tmp_path: Path, monkeypatch) -> None:
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("OPENBASE_CODING_BACKEND", "claude-agent-sdk")
+    monkeypatch.setenv("OPENBASE_CODING_BACKEND", "claude_code")
 
     assert dispatcher_config.dispatcher_model(config_path) == "sonnet"
     assert dispatcher_config.super_agents_model(config_path) == "opus"
@@ -31,13 +31,13 @@ def test_backend_model_uses_env_backend(tmp_path: Path, monkeypatch) -> None:
 def test_backend_model_uses_env_file_backend(tmp_path: Path, monkeypatch) -> None:
     env_file = tmp_path / ".env"
     config_path = tmp_path / "dispatcher-config.json"
-    env_file.write_text("OPENBASE_CODING_BACKEND=claude-tui\n", encoding="utf-8")
+    env_file.write_text("OPENBASE_CODING_BACKEND=openbase_cloud\n", encoding="utf-8")
     config_path.write_text(
         json.dumps(
             {
                 "backend_models": {
                     "codex": {"super_agents": "gpt-5.5"},
-                    "claude-tui": {"super_agents": "sonnet"},
+                    "openbase_cloud": {"super_agents": "openbase-codex"},
                 },
                 "super_agents_model": "legacy-model",
             }
@@ -48,10 +48,10 @@ def test_backend_model_uses_env_file_backend(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.delenv("OPENBASE_CODEX_BACKEND", raising=False)
     monkeypatch.setattr(dispatcher_config, "DEFAULT_ENV_FILE_PATH", env_file)
 
-    assert dispatcher_config.super_agents_model(config_path) == "sonnet"
+    assert dispatcher_config.super_agents_model(config_path) == "openbase-codex"
 
 
-def test_super_agents_model_falls_back_to_legacy_key(
+def test_super_agents_model_ignores_legacy_key(
     tmp_path: Path, monkeypatch
 ) -> None:
     config_path = tmp_path / "dispatcher-config.json"
@@ -59,6 +59,6 @@ def test_super_agents_model_falls_back_to_legacy_key(
         json.dumps({"super_agents_model": "legacy-model"}),
         encoding="utf-8",
     )
-    monkeypatch.setenv("OPENBASE_CODING_BACKEND", "claude-agent-sdk")
+    monkeypatch.setenv("OPENBASE_CODING_BACKEND", "claude_code")
 
-    assert dispatcher_config.super_agents_model(config_path) == "legacy-model"
+    assert dispatcher_config.super_agents_model(config_path) is None

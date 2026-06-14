@@ -25,10 +25,10 @@ def test_backend_use_writes_canonical_backend_and_preserves_file(tmp_path) -> No
     )
 
     assert result.exit_code == 0
-    assert "Backend set to claude-agent-sdk" in result.output
+    assert "Backend set to claude_code" in result.output
     content = env_file.read_text(encoding="utf-8")
     assert "KEEP_ME=1" in content
-    assert "OPENBASE_CODING_BACKEND=claude-agent-sdk" in content
+    assert "OPENBASE_CODING_BACKEND=claude_code" in content
     assert "OPENBASE_CODEX_BACKEND=codex" in content
 
 
@@ -36,12 +36,13 @@ def test_backend_use_creates_env_file(tmp_path) -> None:
     env_file = tmp_path / "nested" / ".env"
 
     result = CliRunner().invoke(
-        main, ["backend", "use", "claude-tui", "--env-file", str(env_file)]
+        main, ["backend", "use", "openbase-cloud", "--env-file", str(env_file)]
     )
 
     assert result.exit_code == 0
     assert (
-        env_file.read_text(encoding="utf-8") == "OPENBASE_CODING_BACKEND=claude-tui\n"
+        env_file.read_text(encoding="utf-8")
+        == "OPENBASE_CODING_BACKEND=openbase_cloud\n"
     )
 
 
@@ -66,7 +67,7 @@ def test_backend_status_reads_legacy_env_key(tmp_path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "Backend: claude-tui" in result.output
+    assert "Backend: claude_code" in result.output
 
 
 def test_backend_list_shows_supported_values() -> None:
@@ -74,8 +75,9 @@ def test_backend_list_shows_supported_values() -> None:
 
     assert result.exit_code == 0
     assert "codex (default)" in result.output
-    assert "claude-agent-sdk" in result.output
-    assert "claude-tui" in result.output
+    assert "openbase_cloud" in result.output
+    assert "claude_code" in result.output
+    assert "claude-tui" not in result.output
     assert "proxy" not in result.output
 
 

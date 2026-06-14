@@ -15,20 +15,20 @@ from openbase_coder_cli.cli.backend import read_backend, write_backend
 from openbase_coder_cli.paths import DEFAULT_ENV_FILE_PATH
 
 BACKEND_OPTIONS = {
-    "claude-agent-sdk": {
-        "label": "Claude Agent SDK",
-        "summary": "Direct Claude backend.",
-        "description": "Uses local Claude auth and billing through the Agent SDK for Super Agents UI-driver sessions; ANTHROPIC_API_KEY is not supported.",
-    },
-    "claude-tui": {
-        "label": "Claude Code TUI",
-        "summary": "No Anthropic API key required.",
-        "description": "Uses your local Claude Code CLI/TUI login directly for Super Agents UI-driver sessions.",
-    },
     "codex": {
         "label": "Codex",
         "summary": "Native OpenAI Codex app-server.",
-        "description": "Uses codex-app-server for native OpenAI Codex sessions.",
+        "description": "Uses Codex app-server directly with OpenAI models.",
+    },
+    "openbase_cloud": {
+        "label": "Openbase Cloud",
+        "summary": "Managed Openbase model proxy.",
+        "description": "Uses your Openbase login with the Openbase Cloud model proxy for Codex-compatible sessions.",
+    },
+    "claude_code": {
+        "label": "Claude Code",
+        "summary": "Claude Code Agent SDK.",
+        "description": "Uses local Claude auth and billing through the Claude Code Agent SDK for Super Agents UI-driver sessions.",
     },
 }
 
@@ -38,9 +38,9 @@ class CodingBackendSerializer(serializers.Serializer):
 
 
 def _restart_hint(backend: str) -> str:
-    if backend == "codex":
+    if backend in {"codex", "openbase_cloud"}:
         return "Restart or recreate the dispatcher/MCP host for Super Agents to pick up the change."
-    return "Restart or recreate the dispatcher/MCP host for the Claude backend to pick up the change; keep Openbase services running."
+    return "Restart or recreate the dispatcher/MCP host for Claude Code to pick up the change; keep Openbase services running."
 
 
 def _backend_payload(*, changed: bool = False) -> dict:

@@ -13,8 +13,8 @@ openbase-coder backend use codex
 ## Supported Backends
 
 - `codex`: default native Codex app-server backend.
-- `claude-agent-sdk`: Claude Agent SDK backend for Super Agents UI-driver sessions using local Claude auth/billing, not `ANTHROPIC_API_KEY`.
-- `claude-tui`: local Claude Code CLI/TUI backend.
+- `openbase_cloud`: Codex-compatible backend through the Openbase Cloud model proxy.
+- `claude_code`: Claude Code backend for Super Agents UI-driver sessions using local Claude auth/billing, not `ANTHROPIC_API_KEY`.
 
 The command persists the selection in `~/.openbase/.env` as
 `OPENBASE_CODING_BACKEND=<backend>`, the same setting written by
@@ -22,7 +22,8 @@ The command persists the selection in `~/.openbase/.env` as
 Older installs that still set `OPENBASE_CODEX_BACKEND` are supported as a
 fallback.
 
-The backend setting controls `super-agents-mcp` coding sessions. The voice
-dispatcher still needs the local `codex-app-server` service, so keep Openbase
-services running for any backend. After switching backend, restart or recreate
-the dispatcher/MCP host so `super-agents-mcp` reloads its environment.
+The backend setting controls `super-agents-mcp` coding sessions. Codex and
+Openbase Cloud use the local `codex-app-server` service; Claude Code bypasses
+that service for Super Agents UI-driver sessions. After switching backend,
+restart Openbase services and recreate the dispatcher/MCP host so the new
+environment is loaded.

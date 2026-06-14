@@ -100,13 +100,34 @@ SERVICES: list[ServiceDefinition] = [
         command_template=(
             'export CODEX_HOME="{data_dir}/codex_home"\n'
             'mkdir -p "$CODEX_HOME"\n'
+            'OPENBASE_CODING_BACKEND="${{OPENBASE_CODING_BACKEND:-codex}}"\n'
             'CODEX_MODEL_REASONING_EFFORT="${{CODEX_MODEL_REASONING_EFFORT:-high}}"\n'
             'CODEX_SERVICE_TIER="${{CODEX_SERVICE_TIER:-fast}}"\n'
             'CODEX_MODEL="${{CODEX_MODEL:-gpt-5.5}}"\n'
+            "CODEX_EXTRA_CONFIG_ARGS=()\n"
+            'if [ "$OPENBASE_CODING_BACKEND" = "openbase_cloud" ] || [ "$OPENBASE_CODING_BACKEND" = "openbase-cloud" ]; then\n'
+            '    CODEX_MODEL="${{OPENBASE_CLOUD_CODEX_MODEL:-openbase-codex}}"\n'
+            '    OPENBASE_CLOUD_LLM_BASE_URL="${{OPENBASE_CLOUD_LLM_BASE_URL:-${{OPENBASE_CODER_CLI_WEB_BACKEND_URL:-https://app.openbase.cloud}}/api/openbase/llm/openai/v1}}"\n'
+            '    if [ -z "${{OPENBASE_CLOUD_CODEX_API_KEY:-}}" ]; then\n'
+            '        if ! OPENBASE_CLOUD_CODEX_API_KEY="$({openbase_coder} auth print-access-token)"; then\n'
+            '            echo "Unable to get an Openbase Cloud access token. Run openbase-coder login, then restart services." >&2\n'
+            "            exit 1\n"
+            "        fi\n"
+            "        export OPENBASE_CLOUD_CODEX_API_KEY\n"
+            "    fi\n"
+            "    CODEX_EXTRA_CONFIG_ARGS=(\n"
+            '        -c "model_provider=\\"openbase_cloud\\""\n'
+            '        -c "model_providers.openbase_cloud.name=\\"Openbase Cloud\\""\n'
+            '        -c "model_providers.openbase_cloud.base_url=\\"$OPENBASE_CLOUD_LLM_BASE_URL\\""\n'
+            '        -c "model_providers.openbase_cloud.env_key=\\"OPENBASE_CLOUD_CODEX_API_KEY\\""\n'
+            '        -c "model_providers.openbase_cloud.wire_api=\\"responses\\""\n'
+            "    )\n"
+            "fi\n"
             "exec {codex} app-server "
             '-c "model=\\"$CODEX_MODEL\\"" '
             '-c "model_reasoning_effort=\\"$CODEX_MODEL_REASONING_EFFORT\\"" '
             '-c "service_tier=\\"$CODEX_SERVICE_TIER\\"" '
+            '"${{CODEX_EXTRA_CONFIG_ARGS[@]}}" '
             "--listen ws://127.0.0.1:4500"
         ),
         workdir_template="{workspace}",

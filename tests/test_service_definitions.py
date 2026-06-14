@@ -38,16 +38,20 @@ def test_codex_app_server_service_sets_model_defaults():
     service = next(svc for svc in SERVICES if svc.name == "codex-app-server")
     command = service.command_template.format(
         codex="/usr/local/bin/codex",
+        openbase_coder="/usr/local/bin/openbase-coder",
         data_dir="/tmp/openbase",
         workspace="/tmp/workspace",
     )
 
-    assert "OPENBASE_CODING_BACKEND" not in command
     assert "OPENBASE_CODEX_BACKEND" not in command
     assert "claude-agent-sdk" not in command
     assert "bypasses codex-app-server" not in command
     assert "exec /usr/local/bin/codex app-server" in command
     assert "CODEX_CLAUDE_" not in command
+    assert 'OPENBASE_CODING_BACKEND="${OPENBASE_CODING_BACKEND:-codex}"' in command
+    assert "OPENBASE_CLOUD_LLM_BASE_URL" in command
+    assert "OPENBASE_CLOUD_CODEX_API_KEY" in command
+    assert "model_providers.openbase_cloud.base_url" in command
     assert 'CODEX_MODEL="${CODEX_MODEL:-gpt-5.5}"' in command
     assert (
         'CODEX_MODEL_REASONING_EFFORT="${CODEX_MODEL_REASONING_EFFORT:-high}"'

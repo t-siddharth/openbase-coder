@@ -16,6 +16,7 @@ from openbase_coder_cli.backend_config import (
     DEFAULT_CODING_BACKEND,
     LEGACY_CODEX_BACKEND_ENV_KEY,
     SUPPORTED_BACKENDS,
+    normalize_backend,
 )
 from openbase_coder_cli.cli.node import run_workspace_package_command
 from openbase_coder_cli.codex_home_instructions import (
@@ -102,8 +103,11 @@ CODEX_HOME_DEFAULT_DISPATCHER_CONFIG = {
     "super_agents_reasoning_effort": "high",
     "backend_models": {
         "codex": {"dispatcher": "gpt-5.5", "super_agents": "gpt-5.5"},
-        "claude-agent-sdk": {"dispatcher": "sonnet", "super_agents": "sonnet"},
-        "claude-tui": {"dispatcher": "sonnet", "super_agents": "sonnet"},
+        "openbase_cloud": {
+            "dispatcher": "openbase-codex",
+            "super_agents": "openbase-codex",
+        },
+        "claude_code": {"dispatcher": "opus", "super_agents": "opus"},
     },
 }
 CODING_BACKEND_OPTIONS = SUPPORTED_BACKENDS
@@ -165,10 +169,11 @@ DEFAULT_AUDIO_PROVIDER = AUDIO_PROVIDER_OPENBASE_CLOUD
 @click.option(
     "--backend",
     "coding_backend",
-    type=click.Choice(CODING_BACKEND_OPTIONS),
+    type=str,
     default=None,
     help=(
-        "Default coding backend. New env files use codex when omitted; "
+        "Default coding backend: codex, openbase-cloud, or claude-code. "
+        "New env files use codex when omitted; "
         "existing env files are only changed when this option is provided."
     ),
 )
@@ -195,6 +200,11 @@ def setup(
     """Full install flow for Openbase Coder."""
     if platform.system() not in ("Darwin", "Linux"):
         raise click.ClickException("Setup is only supported on macOS and Linux.")
+    if coding_backend is not None:
+        try:
+            coding_backend = normalize_backend(coding_backend)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
 
     OPENBASE_BASE_DIR.mkdir(parents=True, exist_ok=True)
     _ensure_thread_sync_exchange_dir()
@@ -1046,6 +1056,8 @@ def _ensure_env_file(
     coding_backend: str | None = None,
 ) -> None:
     path = Path(env_file)
+    if coding_backend:
+        coding_backend = normalize_backend(coding_backend)
     if path.is_file():
         updates = _missing_livekit_client_credential_values(path)
         if coding_backend:
@@ -1102,15 +1114,12 @@ def _ensure_env_file(
         "# Allow localhost and Tailscale Serve hostnames.",
         "OPENBASE_CODER_CLI_ALLOWED_HOSTS=localhost,127.0.0.1,.ts.net",
         "# Coding backend used by Super Agents and the managed service.",
-        f"# Set {CODING_BACKEND_ENV_KEY} to codex, claude-agent-sdk, or claude-tui.",
+        f"# Set {CODING_BACKEND_ENV_KEY} to codex, openbase_cloud, or claude_code.",
         f"# {LEGACY_CODEX_BACKEND_ENV_KEY} is still read as a fallback for older installs.",
         f"{CODING_BACKEND_ENV_KEY}={coding_backend or DEFAULT_CODING_BACKEND}",
-        "# Claude backends apply to Super Agents UI-driver sessions; the voice dispatcher still uses codex-app-server.",
+        "# Claude Code applies to Super Agents UI-driver sessions; Codex-compatible backends use codex-app-server.",
         f"CLAUDE_CONFIG_DIR={OPENBASE_CLAUDE_CONFIG_DIR}",
         f"SUPER_AGENTS_DEFAULT_CONFIG_PATH={CODEX_DISPATCHER_CONFIG_PATH}",
-        "# SUPER_AGENTS_CLAUDE_TUI_CMD=claude",
-        "# SUPER_AGENTS_CLAUDE_TUI_ARGS=",
-        "# SUPER_AGENTS_CLAUDE_TUI_MODEL=sonnet",
         "CODEX_MODEL=gpt-5.5",
         "CODEX_MODEL_REASONING_EFFORT=high",
         "CODEX_SERVICE_TIER=fast",

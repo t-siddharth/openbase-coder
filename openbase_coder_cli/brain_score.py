@@ -23,5 +23,21 @@ def load_brain_score_token() -> str:
         return ""
 
 
+def save_brain_score_token(token: str) -> Path:
+    stripped = token.strip()
+    if not stripped:
+        raise ValueError("Brain score token cannot be empty.")
+
+    path = brain_score_token_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(f"{stripped}\n")
+    finally:
+        os.chmod(path, 0o600)
+    return path
+
+
 def brain_score_token_configured() -> bool:
     return bool(load_brain_score_token())

@@ -311,12 +311,23 @@ class FakeStaleActiveSuperAgentsBackend(FakeSuperAgentsBackend):
 @pytest.mark.asyncio
 async def test_super_agents_livekit_client_creates_thread_and_turn_through_backend(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = FakeSuperAgentsBackend()
     state_path = tmp_path / "livekit-voice-route.json"
     config_path = tmp_path / "dispatcher-config.json"
+    monkeypatch.setenv("OPENBASE_CODING_BACKEND", "claude_code")
     config_path.write_text(
-        json.dumps({"super_agents_model": "opus"}),
+        json.dumps(
+            {
+                "backend_models": {
+                    "claude_code": {
+                        "dispatcher": "haiku",
+                        "super_agents": "opus",
+                    }
+                }
+            }
+        ),
         encoding="utf-8",
     )
     client = SuperAgentsLiveKitClient(
@@ -340,10 +351,10 @@ async def test_super_agents_livekit_client_creates_thread_and_turn_through_backe
     )
     assert backend.started_threads[0]["label"] == "dispatcher"
     assert backend.started_threads[0]["cwd"] == "/tmp/project"
-    assert backend.started_threads[0]["model"] == "opus"
+    assert backend.started_threads[0]["model"] == "haiku"
     assert backend.started_turns[0][0].thread_id == "dispatcher-thread"
     assert backend.started_turns[0][1]["prompt"] == "hello"
-    assert backend.started_turns[0][1]["model"] == "opus"
+    assert backend.started_turns[0][1]["model"] == "haiku"
     assert (
         "dispatcher instructions"
         in backend.started_turns[0][1]["developerInstructions"]

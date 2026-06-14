@@ -5,43 +5,36 @@ This is documented as a plugin capability now, even though Brain Score Concurren
 The LiveKit Vibes brain readiness score is read from `~/.openbase/brain_score.json` and exposed by the CLI at `/api/brain-readiness/`.
 If no brain score token is configured through `OPENBASE_BRAIN_SCORE_TOKEN` or `~/.openbase/brain_score_token`, the feature is disabled and `/api/brain-readiness/` reports no available score.
 
-## Vibes access token
+## Linking a Vibes AI account
 
 The brain score upload uses the Vibes UAT score endpoint:
 
 ```text
-https://uat.api.getvibes.ai/api/v1/score/hackathon
+http://uat.api.getvibes.ai/api/v1/score/hackathon
 ```
 
-That endpoint requires HTTP Bearer authentication. The token is usually obtained from the Vibes UAT auth API:
+That endpoint requires HTTP Bearer authentication. Link a Vibes account from an
+interactive terminal with:
 
 ```bash
-curl -X POST https://uat.api.getvibes.ai/api/v1/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"you@example.com","password":"your-password"}'
+openbase-coder vibes link
 ```
 
-If the user does not have an account yet, sign up first:
-
-```bash
-curl -X POST https://uat.api.getvibes.ai/api/v1/auth/signup \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"you@example.com","password":"password-at-least-8-chars","name":"Your Name"}'
-```
-
-The response includes `access_token`. Store that value outside git:
-
-```bash
-mkdir -p ~/.openbase
-printf '%s\n' '<access_token>' > ~/.openbase/brain_score_token
-chmod 600 ~/.openbase/brain_score_token
-```
-
-Users can copy-paste this prompt into Codex or Claude Code to get and install the token:
+The command prompts for the Vibes username/email and password, calls the Vibes
+UAT auth login endpoint, extracts the returned `access_token`, and stores it in
+the existing brain score token file:
 
 ```text
-Use the Vibes UAT API docs at https://uat.api.getvibes.ai/docs. Help me obtain a Vibes access token for Openbase brain readiness scoring. If I already have a Vibes account, ask me for my email and password and call POST https://uat.api.getvibes.ai/api/v1/auth/login with JSON {"email":"...","password":"..."}. If I do not have an account, ask me for name, email, and password and call POST https://uat.api.getvibes.ai/api/v1/auth/signup with JSON {"name":"...","email":"...","password":"..."}. Extract access_token from the JSON response, write it to ~/.openbase/brain_score_token with mode 600, and do not print the token or write it into any tracked repository file.
+~/.openbase/brain_score_token
 ```
+
+The token file is created with mode `600` and should stay outside tracked repos.
+At runtime, Openbase Coder also accepts `OPENBASE_BRAIN_SCORE_TOKEN` for systems
+that prefer environment-based secret injection.
+
+Important: this integration targets an early version of the Vibes AI app. Use a
+Vibes-only password that you do not care about and do not reuse anywhere else.
+Later Vibes AI app versions will block this case.
 
 Concurrent agent threshold mapping:
 
