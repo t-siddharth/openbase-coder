@@ -161,6 +161,57 @@ def voice_route() -> None:
         click.echo(f"Target transfer blocked: {data.get('blocked_reason')}")
 
 
+@user.group("ios")
+def ios() -> None:
+    """Control the foreground Openbase iOS app."""
+
+
+@ios.command("open-url")
+@click.argument("url")
+def ios_open_url(url: str) -> None:
+    """Ask the foreground iOS app to open a URL or deep link."""
+    data = _publish_ios_app_control({"action": "open_url", "url": url})
+    click.echo(f"iOS open-url command published: {data.get('command_id')}")
+
+
+@ios.command("mute")
+def ios_mute() -> None:
+    """Mute the active iOS voice call."""
+    data = _publish_ios_app_control({"action": "set_call_muted", "muted": True})
+    click.echo(f"iOS mute command published: {data.get('command_id')}")
+
+
+@ios.command("unmute")
+def ios_unmute() -> None:
+    """Unmute the active iOS voice call."""
+    data = _publish_ios_app_control({"action": "set_call_muted", "muted": False})
+    click.echo(f"iOS unmute command published: {data.get('command_id')}")
+
+
+@ios.command("start-livekit-voice-test")
+def ios_start_livekit_voice_test() -> None:
+    """Switch iOS to the debug LiveKit tab and start its configured call."""
+    data = _publish_ios_app_control({"action": "start_livekit_voice_test_call"})
+    click.echo(f"iOS LiveKit voice test command published: {data.get('command_id')}")
+
+
+@ios.command("start-developer-call")
+def ios_start_developer_call() -> None:
+    """Switch iOS to the normal call tab and start the developer call."""
+    data = _publish_ios_app_control({"action": "start_developer_call"})
+    click.echo(f"iOS developer call command published: {data.get('command_id')}")
+
+
+def _publish_ios_app_control(payload: dict[str, object]) -> dict:
+    response = local_server_request("POST", "/api/user/ios-app-control/", json=payload)
+    return response.json()
+
+
+ios.add_command(ios_open_url, "open-link")
+ios.add_command(ios_start_livekit_voice_test, "debug-livekit-call")
+ios.add_command(ios_start_developer_call, "developer-call")
+
+
 @user.command("exit-to-dispatch")
 @click.option(
     "--room",

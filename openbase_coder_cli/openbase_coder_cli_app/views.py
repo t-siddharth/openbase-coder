@@ -42,6 +42,7 @@ from openbase_coder_cli.openbase_coder_cli_app.diagnostics import (
     health_check,
 )
 from openbase_coder_cli.openbase_coder_cli_app.env_settings import env_settings
+from openbase_coder_cli.openbase_coder_cli_app.ios_app_control import ios_app_control
 from openbase_coder_cli.openbase_coder_cli_app.livekit import (
     livekit_room_token,
     livekit_voice_route,
@@ -259,6 +260,7 @@ __all__ = [
     "health_check",
     "_home_skills_dir",
     "ios_logs_upload",
+    "ios_app_control",
     "kokoro_tts_download",
     "launchctl_ignored_settings",
     "launchctl_service_action",

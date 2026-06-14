@@ -7,8 +7,9 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from openbase_coder_cli.backend_config import (
+    CODEX_BACKEND,
     DEFAULT_CODING_BACKEND,
-    SUPPORTED_BACKENDS,
+    OPENBASE_CLOUD_BACKEND,
     normalize_backend,
 )
 from openbase_coder_cli.cli.backend import read_backend, write_backend
@@ -32,9 +33,11 @@ BACKEND_OPTIONS = {
     },
 }
 
+SELECTABLE_BACKENDS = (CODEX_BACKEND, OPENBASE_CLOUD_BACKEND)
+
 
 class CodingBackendSerializer(serializers.Serializer):
-    backend = serializers.ChoiceField(choices=SUPPORTED_BACKENDS)
+    backend = serializers.ChoiceField(choices=SELECTABLE_BACKENDS)
 
 
 def _restart_hint(backend: str) -> str:
@@ -53,7 +56,7 @@ def _backend_payload(*, changed: bool = False) -> dict:
                 "id": backend_name,
                 **BACKEND_OPTIONS[backend_name],
             }
-            for backend_name in SUPPORTED_BACKENDS
+            for backend_name in SELECTABLE_BACKENDS
         ],
         "env_file_exists": DEFAULT_ENV_FILE_PATH.is_file(),
         "changed": changed,

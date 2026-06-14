@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import importlib.resources as importlib_resources
 import json
 import platform
 import secrets
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 from shutil import which
@@ -18,7 +20,13 @@ from openbase_coder_cli.backend_config import (
     SUPPORTED_BACKENDS,
     normalize_backend,
 )
+from openbase_coder_cli.claude_auth import (
+    claude_auth_status,
+    run_claude_login,
+    sync_normal_claude_state,
+)
 from openbase_coder_cli.cli.node import run_workspace_package_command
+from openbase_coder_cli.codex_backend_config import apply_backend_to_codex_config
 from openbase_coder_cli.codex_home_instructions import (
     ensure_openbase_agents_md,
     ensure_openbase_instruction_md,
@@ -41,11 +49,14 @@ from openbase_coder_cli.paths import (
     LEGACY_CODEX_DISPATCHER_CONFIG_PATH,
     LEGACY_CODEX_DISPATCHER_INSTRUCTIONS_PATH,
     LEGACY_CODEX_SUPER_AGENT_INSTRUCTIONS_PATH,
+    NORMAL_CLAUDE_SETTINGS_PATH,
     NORMAL_CODEX_CONFIG_PATH,
     OPENBASE_BASE_DIR,
     OPENBASE_CLAUDE_CONFIG_DIR,
     OPENBASE_CLAUDE_JSON_PATH,
     OPENBASE_CLAUDE_MD_PATH,
+    OPENBASE_CLAUDE_SETTINGS_PATH,
+    OPENBASE_SOUNDS_DIR,
 )
 from openbase_coder_cli.services.installation import InstallationConfig
 from openbase_coder_cli.services.launchd import install_all_services
@@ -70,6 +81,8 @@ WORKSPACE_REPO = "https://github.com/openbase-community/openbase-coder-workspace
 WORKSPACE_INSTALL_SET = "default"
 CODEX_HOME_DEFAULT_SOURCE_DIR = "instructions"
 CODEX_HOME_SKILLS_SOURCE_DIR = "skills"
+BUNDLED_SOUNDS_PACKAGE = "openbase_coder_cli.resources.sounds"
+BUNDLED_SOUND_FILES = ("wilhelm.wav",)
 CODEX_HOME_DEFAULT_FILES = (
     ("VOICE_INSTRUCTIONS.md", CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH),
     ("DISPATCHER_INSTRUCTIONS.md", CODEX_DISPATCHER_INSTRUCTIONS_PATH),
@@ -98,6 +111,17 @@ CODEX_HOME_PERMISSION_VALUES = (
         "skill_approval = false } }",
     ),
 )
+CLAUDE_CODE_PERMISSION_MODE = "bypassPermissions"
+OPENBASE_CLAUDE_SETTINGS_DEFAULTS = {
+    "env": {"CLAUDE_CODE_ENABLE_TELEMETRY": "0"},
+    "permissions": {
+        "allow": [],
+        "deny": [],
+        "defaultMode": CLAUDE_CODE_PERMISSION_MODE,
+    },
+    "skipDangerousModePermissionPrompt": True,
+    "skipAutoPermissionPrompt": True,
+}
 CODEX_HOME_DEFAULT_DISPATCHER_CONFIG = {
     "dispatcher_reasoning_effort": "low",
     "super_agents_reasoning_effort": "high",
@@ -208,6 +232,7 @@ def setup(
 
     OPENBASE_BASE_DIR.mkdir(parents=True, exist_ok=True)
     _ensure_thread_sync_exchange_dir()
+    _ensure_bundled_sounds()
 
     # --- Clone workspace ---
     if not skip_clone:
@@ -228,6 +253,7 @@ def setup(
         cartesia_api_key=cartesia_api_key,
         coding_backend=coding_backend,
     )
+    selected_coding_backend = _selected_coding_backend(Path(env_file), coding_backend)
 
     # --- Symlink Codex auth into the service CODEX_HOME ---
     _symlink_codex_auth()
@@ -242,10 +268,15 @@ def setup(
 
     # --- Configure the service CODEX_HOME ---
     if link_codex_config:
-        _ensure_codex_home_config(workspace_dir, link_codex_config=True)
+        _ensure_codex_home_config(
+            workspace_dir,
+            coding_backend=selected_coding_backend,
+            link_codex_config=True,
+        )
     else:
-        _ensure_codex_home_config(workspace_dir)
+        _ensure_codex_home_config(workspace_dir, coding_backend=selected_coding_backend)
     _ensure_claude_config(workspace_dir)
+    _ensure_claude_auth_bridge(login_if_needed=selected_coding_backend == "claude_code")
 
     # --- Install/update user-facing CLI shim ---
     _install_cli_shim(workspace_dir)
@@ -451,6 +482,48 @@ def _ensure_thread_sync_exchange_dir() -> None:
     click.echo(f"Prepared Codex thread sync exchange folder at {exchange_dir}")
 
 
+def _ensure_bundled_sounds() -> None:
+    """Install package-bundled sounds into Openbase's user sounds directory."""
+    OPENBASE_SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
+    resources = importlib_resources.files(BUNDLED_SOUNDS_PACKAGE)
+    for sound_name in BUNDLED_SOUND_FILES:
+        resource = resources.joinpath(sound_name)
+        with importlib_resources.as_file(resource) as source_path:
+            if not source_path.is_file():
+                raise click.ClickException(
+                    f"Bundled sound resource not found: {sound_name}"
+                )
+            _copy_bundled_sound(
+                source_path=source_path, target_path=OPENBASE_SOUNDS_DIR / sound_name
+            )
+
+
+def _copy_bundled_sound(*, source_path: Path, target_path: Path) -> None:
+    if target_path.exists():
+        if not target_path.is_file():
+            click.echo(
+                f"Bundled sound target already exists at {target_path}; "
+                "leaving it unchanged."
+            )
+            return
+        try:
+            sound_matches = target_path.read_bytes() == source_path.read_bytes()
+        except OSError:
+            sound_matches = False
+        if sound_matches:
+            click.echo(f"Bundled sound already installed at {target_path}")
+            return
+        click.echo(
+            f"Bundled sound already exists at {target_path} and differs from "
+            "the package default; leaving it unchanged."
+        )
+        return
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source_path, target_path)
+    click.echo(f"Installed bundled sound at {target_path}")
+
+
 def _syncthing_global_ignore_path() -> Path:
     return Path.home() / ".config" / "syncthing" / "global.stignore"
 
@@ -542,7 +615,9 @@ def _ensure_matching_symlink_or_file(
         target_path.unlink()
     elif target_path.exists():
         if not target_path.is_file():
-            click.echo(f"{label} already exists at {target_path}; leaving it unchanged.")
+            click.echo(
+                f"{label} already exists at {target_path}; leaving it unchanged."
+            )
             return False
 
         try:
@@ -728,8 +803,7 @@ def _symlink_skills_to_root(
             target_path.unlink()
         elif target_path.exists():
             click.echo(
-                f"{label} skill already exists at {target_path}; "
-                "leaving it unchanged."
+                f"{label} skill already exists at {target_path}; leaving it unchanged."
             )
             continue
 
@@ -740,6 +814,7 @@ def _symlink_skills_to_root(
 def _ensure_codex_home_config(
     workspace_dir: str,
     *,
+    coding_backend: str = DEFAULT_CODING_BACKEND,
     link_codex_config: bool = False,
 ) -> None:
     """Configure Openbase's service Codex home."""
@@ -769,15 +844,19 @@ def _ensure_codex_home_config(
     updated = _replace_toml_table(updated, SUPER_AGENTS_MCP_TABLE, block)
     if updated == existing:
         click.echo(f"Codex home config already configured at {config_path}")
-        return
+    else:
+        config_path.write_text(updated, encoding="utf-8")
+        click.echo(f"Configured Codex home config at {config_path}")
 
-    config_path.write_text(updated, encoding="utf-8")
-    click.echo(f"Configured Codex home config at {config_path}")
+    result = apply_backend_to_codex_config(coding_backend, config_path=config_path)
+    if result.changed:
+        click.echo(f"Configured Codex backend in {result.path}")
 
 
 def _ensure_claude_config(workspace_dir: str) -> None:
     """Configure Openbase's Claude Code config dir."""
     OPENBASE_CLAUDE_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_claude_settings()
     command_path, args = _super_agents_mcp_command(Path(workspace_dir))
     if not command_path.is_file():
         click.echo(
@@ -818,6 +897,93 @@ def _ensure_claude_config(workspace_dir: str) -> None:
         encoding="utf-8",
     )
     click.echo(f"Configured Claude MCP config at {OPENBASE_CLAUDE_JSON_PATH}")
+
+
+def _ensure_claude_settings() -> None:
+    """Configure Claude Code settings for Openbase-managed SDK sessions."""
+    existing = _read_json_object(OPENBASE_CLAUDE_SETTINGS_PATH)
+    seed = existing or _read_json_object(NORMAL_CLAUDE_SETTINGS_PATH)
+    updated = _merge_claude_settings(seed)
+    if updated == existing:
+        click.echo(
+            f"Claude settings already configured at {OPENBASE_CLAUDE_SETTINGS_PATH}"
+        )
+        return
+
+    OPENBASE_CLAUDE_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    OPENBASE_CLAUDE_SETTINGS_PATH.write_text(
+        json.dumps(updated, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    click.echo(f"Configured Claude settings at {OPENBASE_CLAUDE_SETTINGS_PATH}")
+
+
+def _merge_claude_settings(settings: dict[str, object]) -> dict[str, object]:
+    updated = dict(settings)
+    env = updated.get("env")
+    if not isinstance(env, dict):
+        env = {}
+    updated["env"] = {
+        **OPENBASE_CLAUDE_SETTINGS_DEFAULTS["env"],
+        **env,
+    }
+
+    permissions = updated.get("permissions")
+    if not isinstance(permissions, dict):
+        permissions = {}
+    updated["permissions"] = {
+        "allow": permissions.get("allow", []),
+        "deny": permissions.get("deny", []),
+        **{
+            key: value
+            for key, value in permissions.items()
+            if key not in {"allow", "deny", "defaultMode"}
+        },
+        "defaultMode": CLAUDE_CODE_PERMISSION_MODE,
+    }
+    updated["skipDangerousModePermissionPrompt"] = True
+    updated["skipAutoPermissionPrompt"] = True
+    return updated
+
+
+def _ensure_claude_auth_bridge(*, login_if_needed: bool = False) -> None:
+    """Prepare Openbase's managed Claude Code auth state."""
+    status = claude_auth_status()
+    if status.logged_in:
+        click.echo("Openbase Claude Code auth already configured.")
+        return
+
+    result = sync_normal_claude_state()
+    if result.state_updated:
+        click.echo("Updated Openbase Claude Code state.")
+    click.echo(result.message)
+
+    status = claude_auth_status()
+    if status.logged_in:
+        click.echo("Openbase Claude Code auth configured.")
+        return
+
+    if login_if_needed:
+        click.echo("Running Claude Code login for Openbase's CLAUDE_CONFIG_DIR...")
+        exit_code = run_claude_login()
+        if exit_code != 0:
+            raise click.ClickException(
+                "Claude Code login failed. Run `openbase-coder claude login` and then "
+                "`openbase-coder restart --recreate-dispatcher`."
+            )
+        status = claude_auth_status()
+        if status.logged_in:
+            click.echo("Openbase Claude Code auth configured.")
+            return
+        raise click.ClickException(
+            "Claude Code login completed but Openbase Claude Code auth is still not "
+            "available. Run `openbase-coder claude status` for details."
+        )
+
+    click.echo(
+        "Openbase Claude Code auth is not configured yet. "
+        "Run `openbase-coder claude login` before using the Claude Code backend."
+    )
 
 
 def _read_json_object(path: Path) -> dict[str, object]:
@@ -1120,7 +1286,6 @@ def _ensure_env_file(
         "# Claude Code applies to Super Agents UI-driver sessions; Codex-compatible backends use codex-app-server.",
         f"CLAUDE_CONFIG_DIR={OPENBASE_CLAUDE_CONFIG_DIR}",
         f"SUPER_AGENTS_DEFAULT_CONFIG_PATH={CODEX_DISPATCHER_CONFIG_PATH}",
-        "CODEX_MODEL=gpt-5.5",
         "CODEX_MODEL_REASONING_EFFORT=high",
         "CODEX_SERVICE_TIER=fast",
         "CODEX_APP_SERVER_URL=ws://127.0.0.1:4500",
@@ -1147,6 +1312,20 @@ def _ensure_env_file(
 
     path.write_text("\n".join(lines) + "\n")
     click.echo(f"Generated .env at {path}")
+
+
+def _selected_coding_backend(env_file: Path, requested_backend: str | None) -> str:
+    if requested_backend:
+        return normalize_backend(requested_backend)
+
+    values = _env_file_values(env_file)
+    raw_value = values.get(CODING_BACKEND_ENV_KEY)
+    if raw_value is None:
+        raw_value = values.get(LEGACY_CODEX_BACKEND_ENV_KEY)
+    try:
+        return normalize_backend(raw_value)
+    except ValueError:
+        return DEFAULT_CODING_BACKEND
 
 
 def _upsert_env_file_values(path: Path, values: dict[str, str]) -> None:

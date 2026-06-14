@@ -45,7 +45,6 @@ def test_coding_backend_settings_defaults_when_env_file_missing(
     assert [option["id"] for option in response.data["supported_backends"]] == [
         "codex",
         "openbase_cloud",
-        "claude_code",
     ]
 
 
@@ -74,6 +73,12 @@ def test_coding_backend_settings_persists_backend(
     assert "KEEP_ME=1" in content
     assert "OPENBASE_CODEX_BACKEND=codex" in content
     assert "OPENBASE_CODING_BACKEND=openbase_cloud" in content
+    config = (tmp_path / "codex_home" / "config.toml").read_text(
+        encoding="utf-8"
+    )
+    assert 'model = "openbase-codex"' in config
+    assert 'model_provider = "openbase_cloud"' in config
+    assert "[model_providers.openbase_cloud]" in config
 
 
 def test_coding_backend_settings_reads_legacy_backend(
@@ -90,6 +95,30 @@ def test_coding_backend_settings_reads_legacy_backend(
 
     assert response.status_code == 200
     assert response.data["backend"] == "claude_code"
+    assert [option["id"] for option in response.data["supported_backends"]] == [
+        "codex",
+        "openbase_cloud",
+    ]
+
+
+def test_coding_backend_settings_rejects_claude_code_selection(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(backend_settings, "DEFAULT_ENV_FILE_PATH", env_file)
+
+    response = backend_settings.coding_backend_settings(
+        _authenticated_request(
+            "PUT",
+            "/api/settings/coding-backend/",
+            {"backend": "claude_code"},
+        )
+    )
+
+    assert response.status_code == 400
+    assert "backend" in response.data
+    assert not env_file.exists()
 
 
 def test_coding_backend_settings_rejects_unsupported_backend(

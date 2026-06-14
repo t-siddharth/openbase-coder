@@ -18,7 +18,10 @@ from openbase_coder_cli.services.registry import (
     require_installation,
     target_services,
 )
-from openbase_coder_cli.services.tailscale_serve import tailscale_serve_health
+from openbase_coder_cli.services.tailscale_serve import (
+    configure_tailscale_serve,
+    tailscale_serve_health,
+)
 from openbase_coder_cli.services.voice_warning import (
     any_service_action_interrupts_voice,
     warn_before_voice_interruption,
@@ -33,6 +36,30 @@ def _ensure_started(config, svc: ServiceDefinition, verb: str) -> None:
         click.echo(f"  Failed to {verb} {svc.name}: {exc}")
 
 
+def _ensure_tailscale_serve_routes() -> None:
+    click.echo()
+    click.echo("Configuring Tailscale Serve routes...")
+    try:
+        configure_tailscale_serve()
+    except Exception as exc:
+        click.echo(click.style(f"  WARN  {exc}", fg="yellow"))
+        click.echo(
+            "  Run these manually after Tailscale is installed and connected:\n"
+            "    tailscale serve --bg --http=18080 http://127.0.0.1:7999\n"
+            "    tailscale serve --bg --tcp=7880 tcp://127.0.0.1:7880"
+        )
+    else:
+        click.echo("  Configured :18080 -> http://127.0.0.1:7999")
+        click.echo("  Configured tcp :7880 -> tcp://127.0.0.1:7880")
+
+
+def _install_default_services() -> None:
+    config = require_installation()
+    click.echo("Installing launchd services...")
+    install_all_services(config)
+    _ensure_tailscale_serve_routes()
+
+
 @click.group()
 def services() -> None:
     """Service lifecycle management for Openbase Coder."""
@@ -41,9 +68,13 @@ def services() -> None:
 @services.command()
 def install() -> None:
     """Generate and load all launchd services."""
-    config = require_installation()
-    click.echo("Installing launchd services...")
-    install_all_services(config)
+    _install_default_services()
+
+
+@services.command("up")
+def up() -> None:
+    """Install/start default services and configure Tailscale Serve."""
+    _install_default_services()
 
 
 @services.command()
@@ -51,8 +82,11 @@ def install() -> None:
 def start(name: str | None) -> None:
     """Start all or one service."""
     config = require_installation()
-    for svc in target_services(name):
+    targets = target_services(name)
+    for svc in targets:
         _ensure_started(config, svc, "started")
+    if name is None:
+        _ensure_tailscale_serve_routes()
 
 
 @services.command()
@@ -80,15 +114,24 @@ def status() -> None:
     for svc in SERVICES:
         info = launchctl_status(svc)
         name_col = f"  {svc.name:<20}"
+        required = getattr(svc, "install_by_default", True)
         if not info["installed"]:
-            click.echo(f"{name_col} not installed")
-            has_failure = True
+            if required:
+                click.echo(f"{name_col} not installed")
+                has_failure = True
+            else:
+                click.echo(f"{name_col} optional (not installed)")
         elif info["pid"]:
             click.echo(f"{name_col} running (pid {info['pid']})")
         else:
             exit_code = info.get("last_exit_code", "unknown")
-            click.echo(f"{name_col} loaded (not running, last exit: {exit_code})")
-            has_failure = True
+            if required:
+                click.echo(f"{name_col} loaded (not running, last exit: {exit_code})")
+                has_failure = True
+            else:
+                click.echo(
+                    f"{name_col} optional (not running, last exit: {exit_code})"
+                )
 
     serve_health = tailscale_serve_health()
     click.echo()

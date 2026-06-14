@@ -18,6 +18,7 @@ openbase-coder [OPTIONS] COMMAND [ARGS]
 | Command | Description |
 |---|---|
 | [`backend`](backend.md) | View or switch the selected coding backend |
+| [`claude`](claude.md) | Manage Openbase's Claude Code auth |
 | [`setup`](setup.md) | Full local bootstrap flow |
 | [`server`](server.md) | Run local Django/ASGI server |
 | [`restart`](restart.md) | Restart Openbase-managed services |

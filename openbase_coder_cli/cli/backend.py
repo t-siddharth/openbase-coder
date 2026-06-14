@@ -16,6 +16,10 @@ from openbase_coder_cli.cli.setup import (
     _format_env_value,
     _upsert_env_file_values,
 )
+from openbase_coder_cli.codex_backend_config import (
+    apply_backend_to_codex_config,
+    codex_config_path_for_env_file,
+)
 from openbase_coder_cli.paths import DEFAULT_ENV_FILE_PATH
 
 BACKEND_ENV_KEY = CODING_BACKEND_ENV_KEY
@@ -92,12 +96,18 @@ def read_backend(env_file: Path) -> str:
 
 def write_backend(env_file: Path, backend_name: str) -> None:
     normalized = normalize_backend(backend_name)
+    values = read_env_values(env_file) if env_file.is_file() else {}
     env_file.parent.mkdir(parents=True, exist_ok=True)
     if env_file.is_file():
         _upsert_env_file_values(env_file, {BACKEND_ENV_KEY: normalized})
-        return
-    env_file.write_text(
-        f"{BACKEND_ENV_KEY}={_format_env_value(normalized)}\n", encoding="utf-8"
+    else:
+        env_file.write_text(
+            f"{BACKEND_ENV_KEY}={_format_env_value(normalized)}\n", encoding="utf-8"
+        )
+    apply_backend_to_codex_config(
+        normalized,
+        config_path=codex_config_path_for_env_file(env_file),
+        web_backend_url=values.get("OPENBASE_CODER_CLI_WEB_BACKEND_URL"),
     )
 
 

@@ -192,16 +192,21 @@ def service_status(request):
         _auth_debug_value(request),
     )
     services = {
-        "django": {"name": "Django (Coder CLI)", "port": 7999},
-        "codex_app_server": {"name": "Codex App Server", "port": 4500},
-        "livekit_server": {"name": "LiveKit Server", "port": 7880},
-        "livekit_agent": {"name": "LiveKit Agent", "port": 8081},
+        "django": {"name": "Django (Coder CLI)", "port": 7999, "optional": False},
+        "codex_app_server": {
+            "name": "Codex App Server",
+            "port": 4500,
+            "optional": False,
+        },
+        "livekit_server": {"name": "LiveKit Server", "port": 7880, "optional": False},
+        "livekit_agent": {"name": "LiveKit Agent", "port": 8081, "optional": False},
         "web_backend": {
             "name": "Web Backend",
             "url": f"{getattr(settings, 'WEB_BACKEND_URL', '').rstrip('/')}/_allauth/app/v1/config",
             "port": None,
+            "optional": False,
         },
-        "tailscale": {"name": "Tailscale", "port": None},
+        "tailscale": {"name": "Tailscale", "port": None, "optional": False},
     }
     for service_name in (
         "codex-thread-sync",
@@ -218,6 +223,7 @@ def service_status(request):
             "running": bool(status_payload.get("pid")),
             "installed": bool(status_payload.get("installed")),
             "last_exit_code": status_payload.get("last_exit_code"),
+            "optional": not service.install_by_default,
         }
     for key, svc in services.items():
         if "running" not in svc:
@@ -244,6 +250,7 @@ def service_status(request):
         "livekit_configured": serve_health.livekit_configured,
         "openbase_reachable": serve_health.openbase_reachable,
         "error": serve_health.error,
+        "optional": False,
     }
     logger.info(
         "service_status probe service=tailscale_serve running=%s url=%s error=%s",

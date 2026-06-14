@@ -220,7 +220,56 @@ class FakeSuperAgentsClient:
         return result
 
 
-def _manager(client: FakeSuperAgentsClient) -> CodexAppServerSessionManager:
+class FakeBackendSessionClient:
+    def __init__(self, responses: dict[str, list[Any]]) -> None:
+        self.responses = {key: list(value) for key, value in responses.items()}
+        self.calls: list[tuple[str, Any]] = []
+
+    async def sessions(self) -> list[dict[str, Any]]:
+        self.calls.append(("sessions", {}))
+        return self._pop("sessions")
+
+    async def read_by_label(self, input_data, include_turns: bool = False) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "read_by_label",
+                {
+                    "thread_id": input_data.thread_id,
+                    "include_turns": include_turns,
+                    "max_items": input_data.max_items,
+                },
+            )
+        )
+        return self._pop("read_by_label")
+
+    async def start_turn_by_label(
+        self,
+        input_data,
+        turn_input: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "start_turn_by_label",
+                {"thread_id": input_data.thread_id, "turn_input": turn_input},
+            )
+        )
+        return self._pop("start_turn_by_label")
+
+    async def cancel_by_label(self, input_data) -> dict[str, Any]:
+        self.calls.append(("cancel_by_label", {"thread_id": input_data.thread_id}))
+        return self._pop("cancel_by_label")
+
+    def _pop(self, key: str) -> Any:
+        queue = self.responses.get(key, [])
+        if not queue:
+            raise AssertionError(f"Unexpected fake client call: {key}")
+        result = queue.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+def _manager(client: Any) -> CodexAppServerSessionManager:
     return CodexAppServerSessionManager(client=client)
 
 
@@ -460,6 +509,213 @@ def test_list_thread_page_uses_cursor_request(tmp_path: Path) -> None:
         {
             "method": "thread/list",
             "params": {"useStateDbOnly": True, "limit": 25, "cursor": "cursor-2"},
+        },
+    )
+
+
+def test_list_thread_page_reads_claude_code_backend_sessions(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    client = FakeBackendSessionClient(
+        {
+            "sessions": [
+                [
+                    {
+                        "id": "s_dispatcher",
+                        "name": "dispatcher",
+                        "cwd": str(project_dir),
+                        "status": "waiting",
+                        "createdAt": "2026-06-19T20:00:00.000Z",
+                        "updatedAt": "2026-06-19T21:00:00.000Z",
+                        "lastTurnId": "t_1",
+                    }
+                ]
+            ]
+        }
+    )
+
+    page = asyncio.run(_manager(client).list_thread_page(limit=25))
+
+    assert [thread.session_id for thread in page.threads] == ["s_dispatcher"]
+    assert page.threads[0].name == "dispatcher"
+    assert page.threads[0].directory == str(project_dir)
+    assert page.threads[0].status == "waiting"
+    assert page.next_cursor is None
+    assert client.calls == [("sessions", {})]
+
+
+def test_read_thread_reads_claude_code_backend_turns(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    client = FakeBackendSessionClient(
+        {
+            "read_by_label": [
+                {
+                    "threadId": "s_dispatcher",
+                    "backend": "claude_code",
+                    "session": {
+                        "id": "s_dispatcher",
+                        "name": "dispatcher",
+                        "cwd": str(project_dir),
+                        "status": "waiting",
+                        "createdAt": "2026-06-19T20:00:00.000Z",
+                        "updatedAt": "2026-06-19T21:00:00.000Z",
+                    },
+                    "turns": [
+                        {
+                            "turnId": "t_1",
+                            "promptPreview": "Say hi",
+                            "status": "completed",
+                            "createdAt": "2026-06-19T20:05:00.000Z",
+                            "finishedAt": "2026-06-19T20:05:10.000Z",
+                            "reasoningEffort": "low",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    thread = asyncio.run(_manager(client).get_thread_state("s_dispatcher"))
+
+    assert thread is not None
+    assert thread.session_id == "s_dispatcher"
+    assert thread.name == "dispatcher"
+    assert thread.status == "waiting"
+    assert [turn.run_id for turn in thread.run_history] == ["t_1"]
+    assert thread.run_history[0].message == "Say hi"
+    assert thread.run_history[0].reasoning_effort == "low"
+    assert client.calls == [
+        (
+            "read_by_label",
+            {"thread_id": "s_dispatcher", "include_turns": True, "max_items": 25},
+        )
+    ]
+
+
+def test_read_thread_ignores_stale_claude_code_running_turns(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    client = FakeBackendSessionClient(
+        {
+            "read_by_label": [
+                {
+                    "threadId": "s_dispatcher",
+                    "backend": "claude_code",
+                    "session": {
+                        "id": "s_dispatcher",
+                        "name": "dispatcher",
+                        "cwd": str(project_dir),
+                        "status": "waiting",
+                        "createdAt": "2026-06-19T20:00:00.000Z",
+                        "updatedAt": "2026-06-19T21:00:00.000Z",
+                    },
+                    "turns": [
+                        {
+                            "turnId": "t_stale",
+                            "promptPreview": "stale partial voice transcript",
+                            "status": "running",
+                            "createdAt": "2026-06-19T20:05:00.000Z",
+                        },
+                        {
+                            "turnId": "t_done",
+                            "promptPreview": "completed prompt",
+                            "status": "completed",
+                            "createdAt": "2026-06-19T20:10:00.000Z",
+                            "finishedAt": "2026-06-19T20:10:10.000Z",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    thread = asyncio.run(_manager(client).get_thread_state("s_dispatcher"))
+
+    assert thread is not None
+    assert thread.status == "waiting"
+    assert thread.current_run is None
+    assert [turn.run_id for turn in thread.run_history] == ["t_done"]
+
+
+def test_read_thread_uses_claude_code_active_turn_id(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    client = FakeBackendSessionClient(
+        {
+            "read_by_label": [
+                {
+                    "threadId": "s_dispatcher",
+                    "backend": "claude_code",
+                    "session": {
+                        "id": "s_dispatcher",
+                        "name": "dispatcher",
+                        "cwd": str(project_dir),
+                        "status": "running",
+                        "activeTurnId": "t_active",
+                        "createdAt": "2026-06-19T20:00:00.000Z",
+                        "updatedAt": "2026-06-19T21:00:00.000Z",
+                    },
+                    "turns": [
+                        {
+                            "turnId": "t_stale",
+                            "promptPreview": "older running row",
+                            "status": "running",
+                            "createdAt": "2026-06-19T20:05:00.000Z",
+                        },
+                        {
+                            "turnId": "t_active",
+                            "promptPreview": "actual active prompt",
+                            "status": "running",
+                            "createdAt": "2026-06-19T20:10:00.000Z",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    thread = asyncio.run(_manager(client).get_thread_state("s_dispatcher"))
+
+    assert thread is not None
+    assert thread.status == "running"
+    assert thread.current_run is not None
+    assert thread.current_run.run_id == "t_active"
+    assert thread.current_run.message == "actual active prompt"
+
+
+def test_send_message_starts_claude_code_backend_turn(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    client = FakeBackendSessionClient(
+        {
+            "read_by_label": [
+                {
+                    "threadId": "s_dispatcher",
+                    "session": {
+                        "id": "s_dispatcher",
+                        "name": "dispatcher",
+                        "cwd": str(project_dir),
+                        "status": "waiting",
+                        "createdAt": "2026-06-19T20:00:00.000Z",
+                        "updatedAt": "2026-06-19T21:00:00.000Z",
+                    },
+                }
+            ],
+            "start_turn_by_label": [{"turnId": "t_2"}],
+        }
+    )
+
+    turn_id = asyncio.run(_manager(client).send_message("s_dispatcher", "Continue"))
+
+    assert turn_id == "t_2"
+    assert client.calls[-1] == (
+        "start_turn_by_label",
+        {
+            "thread_id": "s_dispatcher",
+            "turn_input": {"prompt": "Continue", "cwd": str(project_dir)},
         },
     )
 

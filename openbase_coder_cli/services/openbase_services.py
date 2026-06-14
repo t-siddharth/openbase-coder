@@ -103,4 +103,5 @@ def _service_payload(service: ServiceDefinition) -> dict:
         "running": bool(pid),
         "pid": pid,
         "last_exit_code": status.get("last_exit_code"),
+        "optional": not service.install_by_default,
     }

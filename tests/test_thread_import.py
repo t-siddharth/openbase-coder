@@ -757,6 +757,7 @@ def test_mcp_super_agents_model_tools_share_cli_config(
     import openbase_coder_cli.mcp.mcp as mcp_module
 
     config_path = tmp_path / "dispatcher-config.json"
+    monkeypatch.setenv("OPENBASE_CODING_BACKEND", "codex")
     monkeypatch.setattr(dispatcher_config, "CODEX_DISPATCHER_CONFIG_PATH", config_path)
 
     result = mcp_module.CodexThreadImportTools.set_super_agents_model(None, "opus")

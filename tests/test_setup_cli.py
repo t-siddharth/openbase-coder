@@ -7,6 +7,8 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+from openbase_coder_cli import claude_auth
+
 setup_cli = importlib.import_module("openbase_coder_cli.cli.setup")
 
 
@@ -16,7 +18,19 @@ def _patch_openbase_agent_paths(monkeypatch, tmp_path: Path) -> tuple[Path, Path
     instructions = tmp_path / "openbase" / "instructions"
     monkeypatch.setattr(setup_cli, "CODEX_HOME_DIR", codex_home)
     monkeypatch.setattr(setup_cli, "OPENBASE_CLAUDE_CONFIG_DIR", claude_config)
-    monkeypatch.setattr(setup_cli, "OPENBASE_CLAUDE_MD_PATH", claude_config / "CLAUDE.md")
+    monkeypatch.setattr(
+        setup_cli, "OPENBASE_CLAUDE_MD_PATH", claude_config / "CLAUDE.md"
+    )
+    monkeypatch.setattr(
+        setup_cli,
+        "OPENBASE_CLAUDE_SETTINGS_PATH",
+        claude_config / "settings.json",
+    )
+    monkeypatch.setattr(
+        setup_cli,
+        "NORMAL_CLAUDE_SETTINGS_PATH",
+        tmp_path / "normal_claude" / "settings.json",
+    )
     monkeypatch.setattr(
         setup_cli,
         "CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH",
@@ -527,6 +541,7 @@ def test_ensure_codex_home_config_creates_config(tmp_path, monkeypatch) -> None:
         "approval_policy = { granular = { sandbox_approval = false, rules = false, "
         "mcp_elicitations = false, request_permissions = false, "
         "skill_approval = false } }\n"
+        'model = "gpt-5.5"\n'
         "\n"
         "[mcp_servers.super-agents]\n"
         f"command = {json.dumps(str(command))}\n"
@@ -606,6 +621,7 @@ def test_ensure_codex_home_config_falls_back_to_resolved_uv(
         "approval_policy = { granular = { sandbox_approval = false, rules = false, "
         "mcp_elicitations = false, request_permissions = false, "
         "skill_approval = false } }\n"
+        'model = "gpt-5.5"\n'
         "\n"
         "[mcp_servers.super-agents]\n"
         f"command = {json.dumps(str(uv_bin))}\n"
@@ -613,9 +629,7 @@ def test_ensure_codex_home_config_falls_back_to_resolved_uv(
     )
 
 
-def test_ensure_claude_config_installs_super_agents_mcp(
-    tmp_path, monkeypatch
-) -> None:
+def test_ensure_claude_config_installs_super_agents_mcp(tmp_path, monkeypatch) -> None:
     workspace = tmp_path / "workspace"
     command = workspace / ".venv" / "bin" / "super-agents-mcp"
     dispatcher_config = tmp_path / "dispatcher-config.json"
@@ -652,6 +666,118 @@ def test_ensure_claude_config_installs_super_agents_mcp(
             ),
         },
     }
+    settings = json.loads((claude_config / "settings.json").read_text(encoding="utf-8"))
+    assert settings["permissions"]["defaultMode"] == "bypassPermissions"
+    assert settings["skipDangerousModePermissionPrompt"] is True
+    assert settings["skipAutoPermissionPrompt"] is True
+
+
+def test_ensure_claude_settings_seeds_from_normal_claude_settings(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _codex_home, claude_config = _patch_openbase_agent_paths(monkeypatch, tmp_path)
+    normal_settings = setup_cli.NORMAL_CLAUDE_SETTINGS_PATH
+    normal_settings.parent.mkdir(parents=True)
+    normal_settings.write_text(
+        json.dumps(
+            {
+                "model": "sonnet",
+                "theme": "light",
+                "permissions": {
+                    "allow": ["Bash(git status:*)"],
+                    "deny": [],
+                    "defaultMode": "auto",
+                },
+                "skipDangerousModePermissionPrompt": False,
+                "skipAutoPermissionPrompt": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    setup_cli._ensure_claude_settings()
+
+    settings = json.loads((claude_config / "settings.json").read_text(encoding="utf-8"))
+    assert settings["model"] == "sonnet"
+    assert settings["theme"] == "light"
+    assert settings["permissions"] == {
+        "allow": ["Bash(git status:*)"],
+        "deny": [],
+        "defaultMode": "bypassPermissions",
+    }
+    assert settings["skipDangerousModePermissionPrompt"] is True
+    assert settings["skipAutoPermissionPrompt"] is True
+
+
+def test_ensure_claude_auth_bridge_runs_login_when_requested(monkeypatch) -> None:
+    statuses = iter(
+        [
+            claude_auth.ClaudeAuthStatus(
+                logged_in=False, raw_output="{}", returncode=0
+            ),
+            claude_auth.ClaudeAuthStatus(
+                logged_in=False, raw_output="{}", returncode=0
+            ),
+            claude_auth.ClaudeAuthStatus(logged_in=True, raw_output="{}", returncode=0),
+        ]
+    )
+    login_calls = []
+    monkeypatch.setattr(setup_cli, "claude_auth_status", lambda: next(statuses))
+    monkeypatch.setattr(
+        setup_cli,
+        "sync_normal_claude_state",
+        lambda: claude_auth.ClaudeAuthBridgeResult(
+            state_updated=False,
+            message="already synced",
+        ),
+    )
+    monkeypatch.setattr(
+        setup_cli,
+        "run_claude_login",
+        lambda: login_calls.append(True) or 0,
+    )
+
+    setup_cli._ensure_claude_auth_bridge(login_if_needed=True)
+
+    assert login_calls == [True]
+
+
+def test_ensure_claude_auth_bridge_does_not_login_unless_requested(monkeypatch) -> None:
+    login_calls = []
+    monkeypatch.setattr(
+        setup_cli,
+        "claude_auth_status",
+        lambda: claude_auth.ClaudeAuthStatus(
+            logged_in=False,
+            raw_output="{}",
+            returncode=0,
+        ),
+    )
+    monkeypatch.setattr(
+        setup_cli,
+        "sync_normal_claude_state",
+        lambda: claude_auth.ClaudeAuthBridgeResult(
+            state_updated=False,
+            message="already synced",
+        ),
+    )
+    monkeypatch.setattr(
+        setup_cli,
+        "run_claude_login",
+        lambda: login_calls.append(True) or 0,
+    )
+
+    setup_cli._ensure_claude_auth_bridge(login_if_needed=False)
+
+    assert login_calls == []
+
+
+def test_selected_coding_backend_reads_existing_env(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("OPENBASE_CODING_BACKEND=claude_code\n", encoding="utf-8")
+
+    assert setup_cli._selected_coding_backend(env_file, None) == "claude_code"
 
 
 def test_ensure_codex_home_config_can_link_normal_codex_config(
@@ -728,7 +854,7 @@ def test_ensure_env_file_documents_coding_backend_default(tmp_path) -> None:
     assert "SUPER_AGENTS_CLAUDE_TUI_CMD" not in content
     assert "CLAUDE_CONFIG_DIR=" in content
     assert "SUPER_AGENTS_DEFAULT_CONFIG_PATH=" in content
-    assert "CODEX_MODEL=gpt-5.5" in content
+    assert "CODEX_MODEL=" not in content
 
 
 def test_ensure_env_file_can_select_backend(tmp_path) -> None:
@@ -741,7 +867,9 @@ def test_ensure_env_file_can_select_backend(tmp_path) -> None:
         coding_backend="openbase-cloud",
     )
 
-    assert "OPENBASE_CODING_BACKEND=openbase_cloud" in env_file.read_text(encoding="utf-8")
+    assert "OPENBASE_CODING_BACKEND=openbase_cloud" in env_file.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_ensure_env_file_updates_existing_backend_only_when_requested(tmp_path) -> None:
@@ -818,6 +946,31 @@ def test_ensure_thread_sync_exchange_dir_replaces_stale_global_ignore_symlink(
     assert (exchange_dir / ".stglobalignore").resolve() == global_ignore.resolve()
 
 
+def test_ensure_bundled_sounds_installs_wilhelm(tmp_path, monkeypatch) -> None:
+    sounds_dir = tmp_path / "sounds"
+    monkeypatch.setattr(setup_cli, "OPENBASE_SOUNDS_DIR", sounds_dir)
+
+    setup_cli._ensure_bundled_sounds()
+
+    target = sounds_dir / "wilhelm.wav"
+    assert target.is_file()
+    assert target.read_bytes().startswith(b"RIFF")
+
+
+def test_ensure_bundled_sounds_preserves_custom_existing_file(
+    tmp_path, monkeypatch
+) -> None:
+    sounds_dir = tmp_path / "sounds"
+    target = sounds_dir / "wilhelm.wav"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"custom sound")
+    monkeypatch.setattr(setup_cli, "OPENBASE_SOUNDS_DIR", sounds_dir)
+
+    setup_cli._ensure_bundled_sounds()
+
+    assert target.read_bytes() == b"custom sound"
+
+
 def test_setup_configures_tailscale_serve(tmp_path, monkeypatch) -> None:
     calls = []
     workspace = tmp_path / "workspace"
@@ -829,6 +982,9 @@ def test_setup_configures_tailscale_serve(tmp_path, monkeypatch) -> None:
         setup_cli,
         "_ensure_thread_sync_exchange_dir",
         lambda: calls.append("thread-sync"),
+    )
+    monkeypatch.setattr(
+        setup_cli, "_ensure_bundled_sounds", lambda: calls.append("sounds")
     )
     monkeypatch.setattr(setup_cli, "_ensure_env_file", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(setup_cli, "_symlink_codex_auth", lambda: None)
@@ -846,7 +1002,7 @@ def test_setup_configures_tailscale_serve(tmp_path, monkeypatch) -> None:
     )
     monkeypatch.setattr(setup_cli, "_init_cli_workspace", lambda _workspace_dir: None)
     monkeypatch.setattr(
-        setup_cli, "_ensure_codex_home_config", lambda _workspace_dir: None
+        setup_cli, "_ensure_codex_home_config", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(setup_cli, "_ensure_claude_config", lambda _workspace_dir: None)
     monkeypatch.setattr(setup_cli, "_install_cli_shim", lambda _workspace_dir: None)
@@ -895,7 +1051,7 @@ def test_setup_configures_tailscale_serve(tmp_path, monkeypatch) -> None:
     )
 
     assert result.exit_code == 0, result.output
-    assert calls == ["thread-sync", "configure"]
+    assert calls == ["thread-sync", "sounds", "configure"]
 
 
 def test_workspace_skill_sources_supports_direct_skill_dirs(tmp_path) -> None:

@@ -78,6 +78,29 @@ SERVICES: list[ServiceDefinition] = [
             '            LIVEKIT_CONFIG_BODY="$(printf \'%s\\n      - %s/128\\n\' "$LIVEKIT_CONFIG_BODY" "$LIVEKIT_NODE_IP_V6")"\n'
             "        fi\n"
             "        ;;\n"
+            "    lan)\n"
+            '        if [ -z "${{LIVEKIT_INTERFACE:-}}" ]; then\n'
+            '            if [ "$(uname)" = "Darwin" ]; then\n'
+            '                LIVEKIT_INTERFACE="$(route -n get default 2>/dev/null | sed -n \'s/.*interface: //p\' | head -n 1)"\n'
+            "            else\n"
+            '                LIVEKIT_INTERFACE="$(ip -4 route show default 2>/dev/null | sed -n \'s/.* dev \\([^ ]*\\).*/\\1/p\' | head -n 1)"\n'
+            "            fi\n"
+            "        fi\n"
+            '        if [ -z "${{LIVEKIT_NODE_IP:-}}" ]; then\n'
+            '            if [ "$(uname)" = "Darwin" ]; then\n'
+            '                LIVEKIT_NODE_IP="$(ipconfig getifaddr "$LIVEKIT_INTERFACE" 2>/dev/null || true)"\n'
+            "            else\n"
+            '                LIVEKIT_NODE_IP="$(ip -o -4 addr show dev "$LIVEKIT_INTERFACE" 2>/dev/null | awk \'NR == 1 {{ sub(/\\/.*/, "", $4); print $4 }}\')"\n'
+            "            fi\n"
+            "        fi\n"
+            '        if [ -z "${{LIVEKIT_INTERFACE:-}}" ] || [ -z "${{LIVEKIT_NODE_IP:-}}" ]; then\n'
+            '            echo "LIVEKIT_INTERFACE and LIVEKIT_NODE_IP are required for LAN LiveKit media." >&2\n'
+            "            exit 1\n"
+            "        fi\n"
+            '        LIVEKIT_BIND_IP="${{LIVEKIT_BIND_IP:-0.0.0.0}}"\n'
+            '        NODE_IP_ARGS=(--node-ip "$LIVEKIT_NODE_IP")\n'
+            '        LIVEKIT_CONFIG_BODY="$(printf \'rtc:\\n  tcp_port: %s\\n  udp_port: %s\\n  enable_loopback_candidate: true\\n  interfaces:\\n    includes:\\n      - %s\\n      - %s\\n  ips:\\n    includes:\\n      - 127.0.0.1/32\\n      - %s/32\\n\' "$LIVEKIT_TCP_PORT" "$LIVEKIT_UDP_PORT" "$LIVEKIT_LOOPBACK_IFACE" "$LIVEKIT_INTERFACE" "$LIVEKIT_NODE_IP")"\n'
+            "        ;;\n"
             "    *)\n"
             '        echo "Unsupported LIVEKIT_NETWORK_MODE: $LIVEKIT_NETWORK_MODE" >&2\n'
             "        exit 1\n"
@@ -103,11 +126,7 @@ SERVICES: list[ServiceDefinition] = [
             'OPENBASE_CODING_BACKEND="${{OPENBASE_CODING_BACKEND:-codex}}"\n'
             'CODEX_MODEL_REASONING_EFFORT="${{CODEX_MODEL_REASONING_EFFORT:-high}}"\n'
             'CODEX_SERVICE_TIER="${{CODEX_SERVICE_TIER:-fast}}"\n'
-            'CODEX_MODEL="${{CODEX_MODEL:-gpt-5.5}}"\n'
-            "CODEX_EXTRA_CONFIG_ARGS=()\n"
             'if [ "$OPENBASE_CODING_BACKEND" = "openbase_cloud" ] || [ "$OPENBASE_CODING_BACKEND" = "openbase-cloud" ]; then\n'
-            '    CODEX_MODEL="${{OPENBASE_CLOUD_CODEX_MODEL:-openbase-codex}}"\n'
-            '    OPENBASE_CLOUD_LLM_BASE_URL="${{OPENBASE_CLOUD_LLM_BASE_URL:-${{OPENBASE_CODER_CLI_WEB_BACKEND_URL:-https://app.openbase.cloud}}/api/openbase/llm/openai/v1}}"\n'
             '    if [ -z "${{OPENBASE_CLOUD_CODEX_API_KEY:-}}" ]; then\n'
             '        if ! OPENBASE_CLOUD_CODEX_API_KEY="$({openbase_coder} auth print-access-token)"; then\n'
             '            echo "Unable to get an Openbase Cloud access token. Run openbase-coder login, then restart services." >&2\n'
@@ -115,19 +134,10 @@ SERVICES: list[ServiceDefinition] = [
             "        fi\n"
             "        export OPENBASE_CLOUD_CODEX_API_KEY\n"
             "    fi\n"
-            "    CODEX_EXTRA_CONFIG_ARGS=(\n"
-            '        -c "model_provider=\\"openbase_cloud\\""\n'
-            '        -c "model_providers.openbase_cloud.name=\\"Openbase Cloud\\""\n'
-            '        -c "model_providers.openbase_cloud.base_url=\\"$OPENBASE_CLOUD_LLM_BASE_URL\\""\n'
-            '        -c "model_providers.openbase_cloud.env_key=\\"OPENBASE_CLOUD_CODEX_API_KEY\\""\n'
-            '        -c "model_providers.openbase_cloud.wire_api=\\"responses\\""\n'
-            "    )\n"
             "fi\n"
             "exec {codex} app-server "
-            '-c "model=\\"$CODEX_MODEL\\"" '
             '-c "model_reasoning_effort=\\"$CODEX_MODEL_REASONING_EFFORT\\"" '
             '-c "service_tier=\\"$CODEX_SERVICE_TIER\\"" '
-            '"${{CODEX_EXTRA_CONFIG_ARGS[@]}}" '
             "--listen ws://127.0.0.1:4500"
         ),
         workdir_template="{workspace}",
@@ -174,12 +184,13 @@ SERVICES: list[ServiceDefinition] = [
             "fi\n"
             'if [ "$LIVEKIT_NETWORK_MODE" = "tailscale" ]; then\n'
             '    export LIVEKIT_URL="${{LIVEKIT_AGENT_URL:-ws://localhost:7880}}"\n'
-            'elif [ "$LIVEKIT_NETWORK_MODE" = "local" ]; then\n'
+            'elif [ "$LIVEKIT_NETWORK_MODE" = "local" ] || [ "$LIVEKIT_NETWORK_MODE" = "lan" ]; then\n'
             '    export LIVEKIT_URL="${{LIVEKIT_URL:-ws://localhost:7880}}"\n'
             "else\n"
             '    echo "Unsupported LIVEKIT_NETWORK_MODE: $LIVEKIT_NETWORK_MODE" >&2\n'
             "    exit 1\n"
             "fi\n"
+            'export LIVEKIT_AGENT_LOAD_THRESHOLD="${{LIVEKIT_AGENT_LOAD_THRESHOLD:-2.0}}"\n'
             "exec {uv} run python -m openbase_coder_cli.livekit_agent.livekit start"
         ),
         workdir_template="{workspace}/cli",
@@ -210,12 +221,22 @@ SERVICES: list[ServiceDefinition] = [
             "    esac\n"
             'elif [ "$LIVEKIT_NETWORK_MODE" = "local" ]; then\n'
             '    export LIVEKIT_URL="${{LIVEKIT_URL:-ws://localhost:7880}}"\n'
+            'elif [ "$LIVEKIT_NETWORK_MODE" = "lan" ]; then\n'
+            '    if [ -z "${{LIVEKIT_NODE_IP:-}}" ]; then\n'
+            '        LIVEKIT_NODE_IP="$(ipconfig getifaddr "${{LIVEKIT_INTERFACE:-$(route -n get default 2>/dev/null | sed -n \'s/.*interface: //p\' | head -n 1)}}" 2>/dev/null || true)"\n'
+            "    fi\n"
+            '    if [ -z "${{LIVEKIT_NODE_IP:-}}" ]; then\n'
+            '        echo "LIVEKIT_NODE_IP is required to derive LIVEKIT_URL in LAN mode." >&2\n'
+            "        exit 1\n"
+            "    fi\n"
+            '    export LIVEKIT_URL="${{LIVEKIT_URL:-ws://${{LIVEKIT_NODE_IP}}:7880}}"\n'
             "else\n"
             '    echo "Unsupported LIVEKIT_NETWORK_MODE: $LIVEKIT_NETWORK_MODE" >&2\n'
             "    exit 1\n"
             "fi\n"
             'OPENBASE_CODER_CLI_HOST="${{OPENBASE_CODER_CLI_HOST:-127.0.0.1}}"\n'
-            'exec {openbase_coder} server --host "$OPENBASE_CODER_CLI_HOST" --port 7999'
+            'OPENBASE_CODER_CLI_PORT="${{OPENBASE_CODER_CLI_PORT:-7999}}"\n'
+            'exec {openbase_coder} server --host "$OPENBASE_CODER_CLI_HOST" --port "$OPENBASE_CODER_CLI_PORT"'
         ),
         workdir_template="{data_dir}",
         port=7999,

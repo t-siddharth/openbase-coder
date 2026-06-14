@@ -37,12 +37,11 @@ Install the tools the setup command expects:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 brew install git node livekit
-brew install --cask tailscale
-open -a Tailscale
+open https://tailscale.com/download/mac
 ```
 
-Sign in to Tailscale before continuing if you want iPhone-to-Mac voice
-networking.
+Install the Tailscale macOS app from the download page, then open it and sign
+in before continuing if you want iPhone-to-Mac voice networking.
 
 ## Run Setup Yourself
 

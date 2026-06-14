@@ -49,16 +49,15 @@ def test_codex_app_server_service_sets_model_defaults():
     assert "exec /usr/local/bin/codex app-server" in command
     assert "CODEX_CLAUDE_" not in command
     assert 'OPENBASE_CODING_BACKEND="${OPENBASE_CODING_BACKEND:-codex}"' in command
-    assert "OPENBASE_CLOUD_LLM_BASE_URL" in command
     assert "OPENBASE_CLOUD_CODEX_API_KEY" in command
-    assert "model_providers.openbase_cloud.base_url" in command
-    assert 'CODEX_MODEL="${CODEX_MODEL:-gpt-5.5}"' in command
+    assert "model_providers.openbase_cloud.base_url" not in command
+    assert 'CODEX_MODEL="${CODEX_MODEL:-gpt-5.5}"' not in command
     assert (
         'CODEX_MODEL_REASONING_EFFORT="${CODEX_MODEL_REASONING_EFFORT:-high}"'
         in command
     )
     assert 'CODEX_SERVICE_TIER="${CODEX_SERVICE_TIER:-fast}"' in command
-    assert '-c "model=\\"$CODEX_MODEL\\""' in command
+    assert '-c "model=\\"$CODEX_MODEL\\""' not in command
     assert '-c "model_reasoning_effort=\\"$CODEX_MODEL_REASONING_EFFORT\\""' in command
     assert '-c "service_tier=\\"$CODEX_SERVICE_TIER\\""' in command
 

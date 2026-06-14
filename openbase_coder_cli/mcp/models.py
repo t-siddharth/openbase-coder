@@ -50,6 +50,7 @@ class ThreadInfo(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
     raw_status: ThreadStatus | None = Field(default=None, exclude=True)
+    status_override: ThreadStatus | None = Field(default=None, exclude=True)
     current_run: TurnInfo | None = Field(
         default=None,
         serialization_alias="current_turn",
@@ -65,6 +66,8 @@ class ThreadInfo(BaseModel):
         """Get the current status of the thread."""
         if self.current_run is not None:
             return self.current_run.status
+        if self.status_override is not None:
+            return self.status_override
         if self.run_history:
             return self.run_history[-1].status
         if self.raw_status is not None:

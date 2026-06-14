@@ -136,6 +136,98 @@ def test_user_say_rejects_blank_agent_name():
     assert "Agent name is required and cannot be blank" in result.output
 
 
+def test_user_ios_open_url_posts_control_command(monkeypatch):
+    calls = []
+
+    def fake_request(method, url, **kwargs):
+        assert method == "POST"
+        calls.append((url, kwargs["json"]))
+        return httpx.Response(
+            202,
+            json={"command_id": "ios-app-control-1", "status": "published"},
+        )
+
+    patch_local_server_request(monkeypatch, fake_request)
+
+    result = CliRunner().invoke(
+        user_cli.user,
+        ["ios", "open-url", "openbase://threads/123"],
+    )
+
+    assert result.exit_code == 0
+    assert "ios-app-control-1" in result.output
+    assert calls == [
+        (
+            "http://127.0.0.1:7999/api/user/ios-app-control/",
+            {"action": "open_url", "url": "openbase://threads/123"},
+        )
+    ]
+
+
+def test_user_ios_mute_and_unmute_post_control_commands(monkeypatch):
+    calls = []
+
+    def fake_request(method, url, **kwargs):
+        assert method == "POST"
+        calls.append(kwargs["json"])
+        return httpx.Response(
+            202,
+            json={"command_id": "ios-app-control-1", "status": "published"},
+        )
+
+    patch_local_server_request(monkeypatch, fake_request)
+
+    mute_result = CliRunner().invoke(user_cli.user, ["ios", "mute"])
+    unmute_result = CliRunner().invoke(user_cli.user, ["ios", "unmute"])
+
+    assert mute_result.exit_code == 0
+    assert unmute_result.exit_code == 0
+    assert calls == [
+        {"action": "set_call_muted", "muted": True},
+        {"action": "set_call_muted", "muted": False},
+    ]
+
+
+def test_user_ios_debug_livekit_call_posts_control_command(monkeypatch):
+    calls = []
+
+    def fake_request(method, url, **kwargs):
+        assert method == "POST"
+        calls.append(kwargs["json"])
+        return httpx.Response(
+            202,
+            json={"command_id": "ios-app-control-1", "status": "published"},
+        )
+
+    patch_local_server_request(monkeypatch, fake_request)
+
+    result = CliRunner().invoke(user_cli.user, ["ios", "debug-livekit-call"])
+
+    assert result.exit_code == 0
+    assert "ios-app-control-1" in result.output
+    assert calls == [{"action": "start_livekit_voice_test_call"}]
+
+
+def test_user_ios_developer_call_posts_control_command(monkeypatch):
+    calls = []
+
+    def fake_request(method, url, **kwargs):
+        assert method == "POST"
+        calls.append(kwargs["json"])
+        return httpx.Response(
+            202,
+            json={"command_id": "ios-app-control-1", "status": "published"},
+        )
+
+    patch_local_server_request(monkeypatch, fake_request)
+
+    result = CliRunner().invoke(user_cli.user, ["ios", "developer-call"])
+
+    assert result.exit_code == 0
+    assert "ios-app-control-1" in result.output
+    assert calls == [{"action": "start_developer_call"}]
+
+
 def test_user_super_agent_name_derives_from_thread_name(monkeypatch):
     voice_route = importlib.import_module("openbase_coder_cli.livekit_voice_route")
     monkeypatch.setattr(
@@ -423,6 +515,7 @@ def test_super_agents_reasoning_sets_config_file(monkeypatch, tmp_path):
 
 def test_super_agents_model_sets_config_file(monkeypatch, tmp_path):
     config_path = tmp_path / "dispatcher-config.json"
+    monkeypatch.setenv("OPENBASE_CODING_BACKEND", "codex")
     monkeypatch.setattr(dispatcher_config, "CODEX_DISPATCHER_CONFIG_PATH", config_path)
 
     result = CliRunner().invoke(user_cli.user, ["super-agents-model", "opus"])

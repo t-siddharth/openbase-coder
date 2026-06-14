@@ -20,3 +20,11 @@ openbase-coder services start django-cli
 # Opt into cross-device Codex thread snapshot sync
 openbase-coder services start codex-thread-device-sync
 ```
+
+Starting the default service set also configures the Tailscale Serve routes used
+by the iOS app:
+
+```bash
+tailscale serve --bg --http=18080 http://127.0.0.1:7999
+tailscale serve --bg --tcp=7880 tcp://127.0.0.1:7880
+```

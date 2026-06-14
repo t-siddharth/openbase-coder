@@ -43,7 +43,12 @@ class FakeSuperAgentsBackend:
         self.started_turns.append((input_data, turn_input))
         return {"turnId": "turn-1"}
 
-    async def steer_by_label(self, input_data, prompt: str) -> dict[str, Any]:
+    async def steer_by_label(
+        self,
+        input_data,
+        prompt: str,
+        turn_input: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         return {"turnId": input_data.turn_id, "prompt": prompt}
 
     async def progress_by_label(self, input_data) -> dict[str, Any]:
@@ -158,6 +163,7 @@ class FakeExternallyActiveSuperAgentsBackend(FakeSuperAgentsBackend):
         super().__init__()
         self.resolved_labels: list[Any] = []
         self.steered: list[tuple[Any, str]] = []
+        self.steer_turn_inputs: list[dict[str, Any] | None] = []
 
     async def resolve_label(self, input_data) -> dict[str, Any]:
         self.resolved_labels.append(input_data)
@@ -167,8 +173,14 @@ class FakeExternallyActiveSuperAgentsBackend(FakeSuperAgentsBackend):
             "turnId": "active-turn-1",
         }
 
-    async def steer_by_label(self, input_data, prompt: str) -> dict[str, Any]:
+    async def steer_by_label(
+        self,
+        input_data,
+        prompt: str,
+        turn_input: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         self.steered.append((input_data, prompt))
+        self.steer_turn_inputs.append(turn_input)
         return {"turnId": input_data.turn_id, "prompt": prompt}
 
     async def progress_by_label(self, input_data) -> dict[str, Any]:
@@ -194,6 +206,7 @@ class FakeSlowStartSuperAgentsBackend(FakeSuperAgentsBackend):
         self.start_called = asyncio.Event()
         self.release_start = asyncio.Event()
         self.steered: list[tuple[Any, str]] = []
+        self.steer_turn_inputs: list[dict[str, Any] | None] = []
 
     async def start_turn_by_label(
         self,
@@ -205,8 +218,14 @@ class FakeSlowStartSuperAgentsBackend(FakeSuperAgentsBackend):
         await self.release_start.wait()
         return {"turnId": "turn-1"}
 
-    async def steer_by_label(self, input_data, prompt: str) -> dict[str, Any]:
+    async def steer_by_label(
+        self,
+        input_data,
+        prompt: str,
+        turn_input: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         self.steered.append((input_data, prompt))
+        self.steer_turn_inputs.append(turn_input)
         return {"turnId": input_data.turn_id, "prompt": prompt}
 
     async def progress_by_label(self, input_data) -> dict[str, Any]:
@@ -232,6 +251,7 @@ class FakeLongRunningSuperAgentsBackend(FakeSuperAgentsBackend):
         self.progress_called = asyncio.Event()
         self.release_progress = asyncio.Event()
         self.steered: list[tuple[Any, str]] = []
+        self.steer_turn_inputs: list[dict[str, Any] | None] = []
 
     async def start_turn_by_label(
         self,
@@ -241,8 +261,14 @@ class FakeLongRunningSuperAgentsBackend(FakeSuperAgentsBackend):
         self.started_turns.append((input_data, turn_input))
         return {"turnId": "turn-1"}
 
-    async def steer_by_label(self, input_data, prompt: str) -> dict[str, Any]:
+    async def steer_by_label(
+        self,
+        input_data,
+        prompt: str,
+        turn_input: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         self.steered.append((input_data, prompt))
+        self.steer_turn_inputs.append(turn_input)
         return {"turnId": input_data.turn_id, "prompt": prompt}
 
     async def progress_by_label(self, input_data) -> dict[str, Any]:
@@ -273,6 +299,7 @@ class FakeStaleActiveSuperAgentsBackend(FakeSuperAgentsBackend):
     def __init__(self) -> None:
         super().__init__()
         self.steered: list[tuple[Any, str]] = []
+        self.steer_turn_inputs: list[dict[str, Any] | None] = []
 
     async def resolve_label(self, input_data) -> dict[str, Any]:
         return {
@@ -281,8 +308,14 @@ class FakeStaleActiveSuperAgentsBackend(FakeSuperAgentsBackend):
             "turnId": "stale-turn",
         }
 
-    async def steer_by_label(self, input_data, prompt: str) -> dict[str, Any]:
+    async def steer_by_label(
+        self,
+        input_data,
+        prompt: str,
+        turn_input: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         self.steered.append((input_data, prompt))
+        self.steer_turn_inputs.append(turn_input)
         return {"turnId": input_data.turn_id, "prompt": prompt}
 
     async def progress_by_label(self, input_data) -> dict[str, Any]:
@@ -498,6 +531,36 @@ async def test_super_agents_livekit_client_proactively_steers_active_turn(
     assert len(backend.steered) == 1
     assert first_result["_livekit_turn_id"] == "turn-1"
     assert follow_up_result["_livekit_turn_id"] == "turn-1"
+
+
+@pytest.mark.asyncio
+async def test_super_agents_livekit_client_passes_dispatcher_reasoning_to_steer(
+    tmp_path: Path,
+) -> None:
+    backend = FakeLongRunningSuperAgentsBackend()
+    state_path = tmp_path / "livekit-voice-route.json"
+    dispatcher_config_path = tmp_path / "dispatcher-config.json"
+    dispatcher_config_path.write_text(
+        json.dumps({"dispatcher_reasoning_effort": "low"}),
+        encoding="utf-8",
+    )
+    client = SuperAgentsLiveKitClient(
+        cwd="/tmp/project",
+        state_path=str(state_path),
+        dispatcher_config_path=dispatcher_config_path,
+        backend_client=backend,
+    )
+
+    first = asyncio.create_task(client.run_turn("write about strawberries"))
+    await backend.progress_called.wait()
+
+    turn_id = await client.steer_active_turn("stop and write about blueberries")
+
+    backend.release_progress.set()
+    await first
+
+    assert turn_id == "turn-1"
+    assert backend.steer_turn_inputs[0]["reasoningEffort"] == "low"
 
 
 @pytest.mark.asyncio

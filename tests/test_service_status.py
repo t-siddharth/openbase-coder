@@ -56,6 +56,7 @@ def test_service_status_includes_background_openbase_services(monkeypatch) -> No
         "running": True,
         "installed": True,
         "last_exit_code": None,
+        "optional": False,
     }
     assert response.data["services"]["openbase_routines"] == {
         "name": "Openbase Routines",
@@ -63,6 +64,7 @@ def test_service_status_includes_background_openbase_services(monkeypatch) -> No
         "running": False,
         "installed": True,
         "last_exit_code": None,
+        "optional": False,
     }
     assert response.data["services"]["codex_thread_device_sync"] == {
         "name": "Codex Thread Device Sync",
@@ -70,6 +72,7 @@ def test_service_status_includes_background_openbase_services(monkeypatch) -> No
         "running": False,
         "installed": True,
         "last_exit_code": None,
+        "optional": True,
     }
     assert response.data["services"]["tailscale_serve"] == {
         "name": "Tailscale Serve",
@@ -81,6 +84,7 @@ def test_service_status_includes_background_openbase_services(monkeypatch) -> No
         "livekit_configured": True,
         "openbase_reachable": True,
         "error": None,
+        "optional": False,
     }
     assert len(response.data["services"]) == 10
 

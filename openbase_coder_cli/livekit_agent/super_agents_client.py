@@ -540,10 +540,19 @@ class SuperAgentsLiveKitClient:
     ) -> str | None:
         assert self._active_turn_id is not None
         prompt_debug = _prompt_debug_fields(prompt)
+        turn_input = {
+            key: value
+            for key, value in {
+                "model": self._model_name,
+                "reasoningEffort": self._configured_reasoning_effort(),
+            }.items()
+            if value is not None
+        }
         try:
             result = await self._backend_client.steer_by_label(
                 self._query(thread_id=thread_id, turn_id=self._active_turn_id),
                 prompt,
+                turn_input,
             )
         except RuntimeError as exc:
             actual_turn_id = _active_turn_id_mismatch(exc)
@@ -559,6 +568,7 @@ class SuperAgentsLiveKitClient:
                 result = await self._backend_client.steer_by_label(
                     self._query(thread_id=thread_id, turn_id=actual_turn_id),
                     prompt,
+                    turn_input,
                 )
             elif _is_turn_cannot_accept_steering_error(exc):
                 logger.warning(

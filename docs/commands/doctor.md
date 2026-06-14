@@ -20,6 +20,9 @@ openbase-coder doctor
 - Required credentials in `.env`
 - Detection of known insecure defaults for some keys
 
+Optional services such as `codex-thread-device-sync` are allowed to be stopped
+or absent without causing a doctor failure.
+
 ## Required Environment Keys
 
 - `OPENBASE_CODER_CLI_SECRET_KEY`

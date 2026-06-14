@@ -13,6 +13,7 @@ openbase-coder services COMMAND [ARGS]
 | Subcommand | Description |
 |---|---|
 | [`install`](services-install.md) | Generate wrappers/plists and load default services |
+| `up` | Alias for `install`; also configures Tailscale Serve routes |
 | [`start`](services-start.md) | Start default services or one named service |
 | [`stop`](services-stop.md) | Stop all or one service |
 | [`status`](services-status.md) | Show service state summary |
@@ -33,6 +34,7 @@ openbase-coder services COMMAND [ARGS]
 
 ```bash
 openbase-coder services install
+openbase-coder services up
 openbase-coder services status
 openbase-coder restart --service django-cli
 openbase-coder services logs codex-app-server

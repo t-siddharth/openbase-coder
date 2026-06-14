@@ -181,3 +181,26 @@ class AllThreadsConsumer(AsyncJsonWebsocketConsumer):
                 "data": event["data"],
             }
         )
+
+
+class IOSAppControlConsumer(AsyncJsonWebsocketConsumer):
+    """Foreground iOS app command channel."""
+
+    group_name = "ios_app_control"
+
+    async def connect(self):
+        if self.scope.get("user") != "authenticated":
+            await self.close(code=4001)
+            return
+
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        await self.accept()
+
+    async def disconnect(self, close_code):
+        await self.channel_layer.group_discard(self.group_name, self.channel_name)
+
+    async def receive_json(self, content, **kwargs):
+        return
+
+    async def ios_app_control(self, event):
+        await self.send_json({"type": "ios_app_control", "data": event["data"]})

@@ -300,7 +300,9 @@ def test_dispatcher_reasoning_config_applies_to_new_turns_without_restart(
 
 def test_target_thread_uses_super_agents_reasoning_instead_of_dispatcher(
     tmp_path: Path,
+    monkeypatch,
 ):
+    monkeypatch.setenv("OPENBASE_CODING_BACKEND", "codex")
     config_path = tmp_path / "dispatcher-config.json"
     config_path.write_text(
         json.dumps(
@@ -357,13 +359,16 @@ def test_target_thread_uses_super_agents_reasoning_instead_of_dispatcher(
     assert request["collaborationMode"]["settings"]["model"] == "gpt-super-agent"
 
 
-def test_livekit_turn_instructions_are_sent_per_turn_only():
+def test_livekit_turn_instructions_are_sent_per_turn_only(tmp_path: Path):
+    config_path = tmp_path / "dispatcher-config.json"
+
     class RecordingClient(CodexAppServerClient):
         def __init__(self):
             super().__init__(
                 ws_url="ws://example.invalid",
                 cwd="/tmp/project",
                 developer_instructions="dispatcher instructions",
+                dispatcher_config_path=config_path,
             )
             self.requests = []
 

@@ -27,3 +27,11 @@ Openbase Cloud use the local `codex-app-server` service; Claude Code bypasses
 that service for Super Agents UI-driver sessions. After switching backend,
 restart Openbase services and recreate the dispatcher/MCP host so the new
 environment is loaded.
+
+For Claude Code, Openbase uses its managed `CLAUDE_CONFIG_DIR` at
+`~/.openbase/claude_config`. Check and configure that scoped login with:
+
+```bash
+openbase-coder claude status
+openbase-coder claude login
+```

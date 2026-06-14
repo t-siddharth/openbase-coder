@@ -169,13 +169,20 @@ def doctor() -> None:
     click.echo(click.style("Service Health", bold=True))
     for svc in SERVICES:
         info = launchctl_status(svc)
+        required = getattr(svc, "install_by_default", True)
         if not info["installed"]:
-            fail(f"{svc.name}: not installed")
+            if required:
+                fail(f"{svc.name}: not installed")
+            else:
+                ok(f"{svc.name}: optional (not installed)")
         elif info["pid"]:
             ok(f"{svc.name}: running (pid {info['pid']})")
         else:
             exit_code = info.get("last_exit_code", "unknown")
-            fail(f"{svc.name}: not running (last exit: {exit_code})")
+            if required:
+                fail(f"{svc.name}: not running (last exit: {exit_code})")
+            else:
+                ok(f"{svc.name}: optional (not running, last exit: {exit_code})")
 
     # --- Bind address security ---
     click.echo()
