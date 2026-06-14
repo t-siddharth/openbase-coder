@@ -1,7 +1,11 @@
-# Manual Installation
+# Manual Setup for the Desktop App
 
-Use this path when you want to run setup yourself instead of letting the
-Electron app run shell commands.
+Use this path when you want to finish first-time setup yourself instead of
+letting the Electron desktop app run setup commands on your behalf.
+
+You do not need to click the app's setup button for Openbase Coder to work. Run
+the commands below in your own terminal, then return to the desktop app after
+the health, voice key, and login checks pass.
 
 The desktop app stops showing the setup flow when all of these checks pass:
 
@@ -9,6 +13,22 @@ The desktop app stops showing the setup flow when all of these checks pass:
 - `~/.openbase/.env` contains non-empty `ASSEMBLY_AI_API_KEY` and
   `CARTESIA_API_KEY` values.
 - `~/.openbase/auth.json` contains an Openbase access token or refresh token.
+
+## What the App Would Run
+
+The Electron app's setup screen runs the published CLI setup command and streams
+the output in the app. The manual setup path is the same underlying operation,
+but you run each command yourself from a terminal so you can inspect what will
+happen and stop at any point.
+
+The default setup command is:
+
+```bash
+uvx --python 3.13 --refresh-package openbase-coder --from openbase-coder openbase-coder setup
+```
+
+If your desktop app shows a pinned setup command, prefer the exact command shown
+there because it may include app-selected options such as the coding backend.
 
 ## Install Prerequisites
 
@@ -26,14 +46,18 @@ networking.
 
 ## Run Setup Yourself
 
-If the desktop app shows a pinned setup command, run that exact command in your
-terminal. Otherwise, use the current published CLI:
+Set the voice keys in your shell before setup if you want the CLI to write them
+into a new `~/.openbase/.env` file:
 
 ```bash
 export ASSEMBLY_AI_API_KEY="<assemblyai-api-key>"
 export CARTESIA_API_KEY="<cartesia-api-key>"
+```
 
-uvx --python 3.13 openbase-coder setup
+Then run the pinned desktop-app command or the default published CLI command:
+
+```bash
+uvx --python 3.13 --refresh-package openbase-coder --from openbase-coder openbase-coder setup
 ```
 
 The setup command creates the Openbase workspace, writes
@@ -57,7 +81,15 @@ CARTESIA_API_KEY=<cartesia-api-key>
 
 ## Authenticate
 
-Run the CLI login flow from your terminal:
+Run the CLI login flow from your terminal. If you used the `uvx` command above
+and have not installed a persistent `openbase-coder` command, run the login
+through `uvx` too:
+
+```bash
+uvx --python 3.13 openbase-coder login
+```
+
+With a persistent install, this shorter command is equivalent:
 
 ```bash
 openbase-coder login
@@ -68,7 +100,8 @@ to show until login writes an access token or refresh token there.
 
 ## Start and Verify Services
 
-Start the managed services:
+Start the managed services. Use the `uvx --python 3.13 openbase-coder ...` form
+instead if you do not have a persistent install:
 
 ```bash
 openbase-coder services start
@@ -93,5 +126,4 @@ tailscale serve --bg --tcp=7880 tcp://127.0.0.1:7880
 
 After the health endpoint, voice keys, and login checks pass, reopen or recheck
 the Electron app. It should skip the setup flow and load the main Openbase Coder
-interface.
-
+interface without the app having run any setup commands.

@@ -8,6 +8,18 @@ from click.testing import CliRunner
 services_cli = importlib.import_module("openbase_coder_cli.cli.services")
 
 
+def test_services_uninstall_command_is_not_registered():
+    runner = CliRunner()
+
+    help_result = runner.invoke(services_cli.services, ["--help"])
+    missing_result = runner.invoke(services_cli.services, ["uninstall"])
+
+    assert help_result.exit_code == 0
+    assert "uninstall" not in help_result.output
+    assert missing_result.exit_code != 0
+    assert "No such command 'uninstall'" in missing_result.output
+
+
 def test_services_status_fails_when_tailscale_serve_health_fails(monkeypatch):
     monkeypatch.setattr(services_cli, "require_installation", lambda: None)
     monkeypatch.setattr(

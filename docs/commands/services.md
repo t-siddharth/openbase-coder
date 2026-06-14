@@ -18,7 +18,6 @@ openbase-coder services COMMAND [ARGS]
 | [`status`](services-status.md) | Show service state summary |
 | [`logs`](services-logs.md) | Tail one service's logs |
 | [`regenerate`](services-regenerate.md) | Rebuild wrappers/plists from `installation.json` |
-| [`uninstall`](services-uninstall.md) | Unload and remove all launchd services |
 
 ## Managed Service Names
 

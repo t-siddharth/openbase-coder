@@ -32,7 +32,9 @@ Then omit `uvx --python 3.13` from later commands.
 ## Documentation
 
 - [Getting Started](getting-started.md)
-- [Manual Installation](manual-installation.md)
+- [Downloads](downloads.md)
+- [Manual Setup](manual-installation.md)
+- [Uninstall](uninstall.md)
 - [Commands](commands/index.md)
 - [Configuration](configuration.md)
 - [Files and Paths](files-and-paths.md)

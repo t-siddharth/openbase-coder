@@ -460,26 +460,6 @@ def regenerate_service(config: InstallationConfig, svc: ServiceDefinition) -> No
     _write_service_files(svc, config, binaries)
 
 
-def uninstall_all_services() -> None:
-    for svc in SERVICES:
-        if launchctl_bootout(svc):
-            click.echo(f"  Unloaded {svc.name}")
-        else:
-            click.echo(f"  {svc.name} was not loaded")
-
-        if _is_macos():
-            _plist_path(svc).unlink(missing_ok=True)
-        else:
-            from openbase_coder_cli.services.systemd import remove_unit
-
-            remove_unit(svc)
-        _wrapper_path(svc).unlink(missing_ok=True)
-
-    click.echo()
-    click.echo("All services uninstalled.")
-    click.echo(f"Log files remain at: {DEFAULT_LOG_DIR}/")
-
-
 def regenerate_all_services(config: InstallationConfig) -> None:
     binaries = _resolve_binaries(config)
     _ensure_launchd_paths()

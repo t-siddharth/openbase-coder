@@ -12,7 +12,6 @@ from openbase_coder_cli.services.launchd import (
     launchctl_bootout,
     launchctl_status,
     regenerate_all_services,
-    uninstall_all_services,
 )
 from openbase_coder_cli.services.registry import (
     find_service,
@@ -138,14 +137,6 @@ def status() -> None:
     click.echo()
     if has_failure:
         raise click.ClickException("One or more Openbase services are unhealthy.")
-
-
-@services.command()
-def uninstall() -> None:
-    """Remove all launchd services."""
-    require_installation()
-    click.echo("Uninstalling launchd services...")
-    uninstall_all_services()
 
 
 @services.command()

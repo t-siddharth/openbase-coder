@@ -8,7 +8,9 @@ repo_url = "https://github.com/openbase-community/openbase-coder"
 nav = [
   { "Home" = "index.md" },
   { "Getting Started" = "getting-started.md" },
-  { "Manual Installation" = "manual-installation.md" },
+  { "Downloads" = "downloads.md" },
+  { "Manual Setup" = "manual-installation.md" },
+  { "Uninstall" = "uninstall.md" },
   { "Commands" = [
     "commands/index.md",
     { "setup" = "commands/setup.md" },
@@ -21,7 +23,6 @@ nav = [
     { "services status" = "commands/services-status.md" },
     { "services logs" = "commands/services-logs.md" },
     { "services regenerate" = "commands/services-regenerate.md" },
-    { "services uninstall" = "commands/services-uninstall.md" },
     { "doctor" = "commands/doctor.md" },
     { "login" = "commands/login.md" },
     { "logout" = "commands/logout.md" },
@@ -44,5 +45,6 @@ features = [
   "navigation.expand",
   "navigation.path",
   "navigation.indexes",
+  "navigation.tabs",
   "content.code.copy"
 ]

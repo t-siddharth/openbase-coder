@@ -103,45 +103,10 @@ uvx --python 3.13 openbase-coder services status
 
 ## Uninstalling Openbase
 
-To stop Openbase and remove the background service definitions from a machine
-where it has already been installed, run:
-
-```bash
-openbase-coder services stop
-openbase-coder services uninstall
-```
-
-If you installed the persistent CLI command, remove it with the same tool you
-used to install it:
-
-=== "uv tool"
-
-    ```bash
-    uv tool uninstall openbase-coder
-    ```
-
-=== "pipx"
-
-    ```bash
-    pipx uninstall openbase-coder
-    ```
-
-=== "pip"
-
-    ```bash
-    pip uninstall openbase-coder
-    ```
-
-`services uninstall` removes the managed launchd plists or systemd user units
-and generated service wrappers. It preserves local Openbase data such as logs,
-auth tokens, plugins, and the workspace under `~/.openbase/`.
-
-To fully remove local Openbase state after uninstalling services and the CLI,
-delete the data directory:
-
-```bash
-rm -rf ~/.openbase
-```
+Uninstall is handled with normal system and package-manager commands, not the
+`openbase-coder` CLI. Follow the [Uninstall Openbase CLI](uninstall.md) page to
+stop and remove launchd/systemd services, remove the CLI package, then either
+delete or archive `~/.openbase`.
 
 ## Authenticate With Openbase Cloud (Optional)
 
