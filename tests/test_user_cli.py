@@ -78,6 +78,25 @@ def test_user_say_posts_explicit_room(monkeypatch):
     ]
 
 
+def test_user_say_accepts_explicit_dispatcher(monkeypatch):
+    calls = []
+
+    def fake_request(method, url, **kwargs):
+        assert method == "POST"
+        calls.append(kwargs["json"])
+        return httpx.Response(
+            202,
+            json={"message_id": "announcer-1", "room_name": "room-1"},
+        )
+
+    patch_local_server_request(monkeypatch, fake_request)
+
+    result = CliRunner().invoke(user_cli.user, ["say", "dispatcher", "hello"])
+
+    assert result.exit_code == 0
+    assert calls == [{"agent_name": "dispatcher", "text": "hello"}]
+
+
 def test_user_say_ignores_legacy_identity_environment(monkeypatch):
     calls = []
 
@@ -106,7 +125,15 @@ def test_user_say_requires_message_after_agent_name():
     result = CliRunner().invoke(user_cli.user, ["say", "Dottie"])
 
     assert result.exit_code != 0
-    assert "Missing argument 'MESSAGE...'" in result.output
+    assert "Agent name is required" in result.output
+    assert "openbase-coder user say AGENT_NAME MESSAGE" in result.output
+
+
+def test_user_say_rejects_blank_agent_name():
+    result = CliRunner().invoke(user_cli.user, ["say", "", "hello"])
+
+    assert result.exit_code != 0
+    assert "Agent name is required and cannot be blank" in result.output
 
 
 def test_user_super_agent_name_derives_from_thread_name(monkeypatch):

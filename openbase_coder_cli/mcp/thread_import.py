@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -866,7 +867,7 @@ def _should_log_sync_result(result: CodexThreadSyncResult) -> bool:
 def _thread_rows(db_path: Path) -> list[dict[str, Any]]:
     if not db_path.exists():
         return []
-    with _connect(db_path) as conn:
+    with _managed_connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         return [
             dict(row)
@@ -879,7 +880,7 @@ def _thread_rows(db_path: Path) -> list[dict[str, Any]]:
 def _thread_row(db_path: Path, thread_id: str) -> dict[str, Any] | None:
     if not db_path.exists():
         return None
-    with _connect(db_path) as conn:
+    with _managed_connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT * FROM threads WHERE id = ?",
@@ -891,7 +892,7 @@ def _thread_row(db_path: Path, thread_id: str) -> dict[str, Any] | None:
 def _target_thread_ids(db_path: Path) -> set[str]:
     if not db_path.exists():
         return set()
-    with _connect(db_path) as conn:
+    with _managed_connect(db_path) as conn:
         rows = conn.execute("SELECT id FROM threads").fetchall()
     return {row[0] for row in rows if isinstance(row[0], str) and row[0]}
 
@@ -905,7 +906,7 @@ def _copy_thread_state_row(
     overrides: dict[str, Any] | None = None,
     overwrite: bool,
 ) -> None:
-    with _connect(source_db) as source_conn, _connect(target_db) as target_conn:
+    with _managed_connect(source_db) as source_conn, _managed_connect(target_db) as target_conn:
         source_conn.row_factory = sqlite3.Row
         target_conn.row_factory = sqlite3.Row
         source_columns = _table_columns(source_conn, table)
@@ -935,7 +936,7 @@ def _copy_thread_dynamic_tools(
     *,
     overwrite: bool,
 ) -> None:
-    with _connect(source_db) as source_conn, _connect(target_db) as target_conn:
+    with _managed_connect(source_db) as source_conn, _managed_connect(target_db) as target_conn:
         source_conn.row_factory = sqlite3.Row
         target_conn.row_factory = sqlite3.Row
         if not _has_table(source_conn, "thread_dynamic_tools") or not _has_table(
@@ -1036,6 +1037,20 @@ def _append_session_index_entry(
 
 def _connect(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(path)
+
+
+@contextmanager
+def _managed_connect(path: Path):
+    conn = _connect(path)
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> list[str]:

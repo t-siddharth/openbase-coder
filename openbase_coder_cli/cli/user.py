@@ -25,8 +25,7 @@ def user() -> None:
 
 
 @user.command()
-@click.argument("agent_name")
-@click.argument("message", nargs=-1, required=True)
+@click.argument("words", nargs=-1, metavar="AGENT_NAME MESSAGE")
 @click.option(
     "--room",
     "room_name",
@@ -34,14 +33,18 @@ def user() -> None:
     help="Explicit LiveKit room name. Defaults to the latest active voice room.",
 )
 def say(
-    agent_name: str,
-    message: tuple[str, ...],
+    words: tuple[str, ...],
     room_name: str,
 ) -> None:
     """Speak an announcer message in the active voice session."""
+    if len(words) < 2:
+        raise click.ClickException(
+            "Agent name is required. Usage: openbase-coder user say AGENT_NAME MESSAGE"
+        )
+    agent_name, *message = words
     normalized_agent_name = " ".join(agent_name.split())
     if not normalized_agent_name:
-        raise click.ClickException("Agent name is required.")
+        raise click.ClickException("Agent name is required and cannot be blank.")
     text = " ".join(message).strip()
     if not text:
         raise click.ClickException("Message text is required.")
