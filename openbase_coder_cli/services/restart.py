@@ -11,7 +11,7 @@ from typing import Any
 
 import click
 
-from openbase_coder_cli.services.definitions import SERVICES
+from openbase_coder_cli.services.definitions import SERVICES, default_services
 from openbase_coder_cli.services.launchd import (
     install_service,
     launchctl_kill,
@@ -48,9 +48,10 @@ def restart_target_names() -> list[str]:
 
 def build_restart_plan(request: RestartRequest) -> RestartPlan:
     service_names = [service.name for service in SERVICES]
+    default_service_names = [service.name for service in default_services()]
     valid_targets = set(service_names)
 
-    requested_targets = list(request.services) or service_names
+    requested_targets = list(request.services) or default_service_names
     unknown = [target for target in requested_targets if target not in valid_targets]
     if unknown:
         valid = ", ".join(restart_target_names())

@@ -12,8 +12,8 @@ openbase-coder services COMMAND [ARGS]
 
 | Subcommand | Description |
 |---|---|
-| [`install`](services-install.md) | Generate wrappers/plists and load all services |
-| [`start`](services-start.md) | Start all or one service |
+| [`install`](services-install.md) | Generate wrappers/plists and load default services |
+| [`start`](services-start.md) | Start default services or one named service |
 | [`stop`](services-stop.md) | Stop all or one service |
 | [`status`](services-status.md) | Show service state summary |
 | [`logs`](services-logs.md) | Tail one service's logs |
@@ -26,6 +26,7 @@ openbase-coder services COMMAND [ARGS]
 - `codex-claude-proxy` (port `6066`)
 - `codex-app-server` (port `4500`)
 - `codex-thread-sync`
+- `codex-thread-device-sync` (optional; explicit start/install only)
 - `openbase-routines`
 - `livekit-agent`
 - `django-cli` (port `7999`)

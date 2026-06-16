@@ -42,6 +42,7 @@ def test_restart_default_schedules_all_openbase_services(monkeypatch):
     assert "livekit-server" in command
     assert "codex-app-server" in command
     assert "django-cli" in command
+    assert "codex-thread-device-sync" not in command
     assert "super-agents-mcp" not in command
     assert warnings == [{"reason": "restart", "emit_cli_warning": True}]
 
@@ -70,6 +71,25 @@ def test_restart_single_service_schedules_only_that_service(monkeypatch):
     assert "codex-thread-sync" in command
     assert "livekit-agent" not in command
     assert warnings == []
+
+
+def test_restart_optional_device_sync_can_be_targeted_explicitly(monkeypatch):
+    popen_calls = []
+
+    class FakePopen:
+        def __init__(self, *args, **kwargs):
+            popen_calls.append((args, kwargs))
+
+    monkeypatch.setattr(InstallationConfig, "exists", classmethod(lambda cls: True))
+    monkeypatch.setattr(restart_module.subprocess, "Popen", FakePopen)
+
+    result = CliRunner().invoke(restart, ["--service", "codex-thread-device-sync"])
+
+    assert result.exit_code == 0
+    assert "codex-thread-device-sync" in result.output
+    command = popen_calls[0][0][0][2]
+    assert "codex-thread-device-sync" in command
+    assert "codex-thread-sync" not in command
 
 
 def test_restart_codex_app_server_only_targets_codex_service():

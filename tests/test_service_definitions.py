@@ -137,6 +137,7 @@ def test_codex_thread_sync_service_is_auto_installed_service():
     )
 
     assert service.workdir_template == "{data_dir}"
+    assert service.install_by_default is True
     assert 'CODEX_THREAD_SYNC_INTERVAL="${CODEX_THREAD_SYNC_INTERVAL:-60}"' in command
     assert (
         'CODEX_THREAD_SYNC_MAX_AGE_DAYS="${CODEX_THREAD_SYNC_MAX_AGE_DAYS:-15}"'
@@ -148,7 +149,7 @@ def test_codex_thread_sync_service_is_auto_installed_service():
     )
 
 
-def test_codex_thread_device_sync_service_is_auto_installed_service():
+def test_codex_thread_device_sync_service_is_optional_service():
     service = next(svc for svc in SERVICES if svc.name == "codex-thread-device-sync")
     command = service.command_template.format(
         openbase_coder="/usr/local/bin/openbase-coder",
@@ -157,6 +158,7 @@ def test_codex_thread_device_sync_service_is_auto_installed_service():
     )
 
     assert service.workdir_template == "{data_dir}"
+    assert service.install_by_default is False
     assert (
         'CODEX_THREAD_DEVICE_SYNC_INTERVAL="${CODEX_THREAD_DEVICE_SYNC_INTERVAL:-60}"'
         in command

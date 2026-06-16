@@ -19,7 +19,11 @@ from openbase_coder_cli.paths import (
     OPENBASE_BASE_DIR,
     PLIST_DIR,
 )
-from openbase_coder_cli.services.definitions import SERVICES, ServiceDefinition
+from openbase_coder_cli.services.definitions import (
+    SERVICES,
+    ServiceDefinition,
+    default_services,
+)
 from openbase_coder_cli.services.installation import InstallationConfig
 
 
@@ -436,7 +440,7 @@ def install_all_services(config: InstallationConfig) -> None:
     _ensure_launchd_paths()
     binaries = _resolve_binaries(config)
 
-    for svc in SERVICES:
+    for svc in default_services():
         click.echo(f"  Installing {svc.name}...")
         _write_service_files(svc, config, binaries)
         launchctl_bootstrap(svc)

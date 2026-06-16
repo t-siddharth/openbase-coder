@@ -9,6 +9,7 @@ class ServiceDefinition:
     description: str
     command_template: str
     workdir_template: str
+    install_by_default: bool = True
     port: int | None = None
     cleanup_ports: tuple[int, ...] = ()
     cleanup_command_substrings: tuple[str, ...] = ()
@@ -199,6 +200,7 @@ SERVICES: list[ServiceDefinition] = [
             'exec {openbase_coder} codex-sync devices run --interval "$CODEX_THREAD_DEVICE_SYNC_INTERVAL" --max-age-days "$CODEX_THREAD_DEVICE_SYNC_MAX_AGE_DAYS" --exchange-dir "$CODEX_THREAD_DEVICE_SYNC_EXCHANGE_DIR"'
         ),
         workdir_template="{data_dir}",
+        install_by_default=False,
     ),
     ServiceDefinition(
         name="openbase-routines",
@@ -266,3 +268,7 @@ SERVICES: list[ServiceDefinition] = [
         port=7999,
     ),
 ]
+
+
+def default_services() -> list[ServiceDefinition]:
+    return [service for service in SERVICES if service.install_by_default]
