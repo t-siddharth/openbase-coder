@@ -36,5 +36,5 @@ Then omit `uvx --python 3.13` from later commands.
 - [Commands](commands/index.md)
 - [Configuration](configuration.md)
 - [Files and Paths](files-and-paths.md)
-- [iOS App Tabs](ios-tabs.md)
+- [iOS App](ios-tabs.md)
 - [Troubleshooting](troubleshooting.md)

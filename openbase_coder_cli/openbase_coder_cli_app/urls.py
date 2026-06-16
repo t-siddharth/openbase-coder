@@ -42,6 +42,7 @@ from openbase_coder_cli.openbase_coder_cli_app.views import (
     plugin_detail,
     plugins_list,
     project_reports,
+    project_reports_action,
     project_reports_download,
     project_reports_file,
     project_reports_tags,
@@ -116,6 +117,11 @@ urlpatterns = [
     path("tags/", tag_options, name="tag-options"),
     path("projects/reports/", project_reports, name="project-reports"),
     path("projects/reports/all/", all_project_reports, name="all-project-reports"),
+    path(
+        "projects/reports/action/",
+        project_reports_action,
+        name="project-reports-action",
+    ),
     path(
         "projects/reports/global/",
         global_reports_projects,

@@ -1,4 +1,50 @@
-# iOS App Tabs
+# iOS App
+
+The Openbase iOS app is a client for the local Openbase Coder runtime that the
+`openbase-coder` CLI installs and runs on the Mac. The app does not replace the
+CLI setup; it connects to the CLI server, LiveKit server, and Codex/agent
+services started by `openbase-coder setup` and `openbase-coder services ...`.
+
+## CLI Connection
+
+In the app's Account tab, the selected backend host is a Tailscale DNS name, IP
+address, or hostname. The app builds these runtime URLs from that host:
+
+- Codex/Openbase API: `http://<host>:18080`
+- LiveKit signaling: `ws://<host>:7880`
+
+For iPhone access over Tailscale, the local setup must expose the CLI API and
+LiveKit ports from the Mac. The troubleshooting guide documents the expected
+shape:
+
+- `18080` forwards to the local Django/Openbase API on `127.0.0.1:7999`.
+- `7880` forwards to the local LiveKit server on `127.0.0.1:7880`.
+- LiveKit media uses TCP `7881` and UDP `7882`.
+
+Before using the app, confirm the local runtime is healthy:
+
+```bash
+openbase-coder doctor
+openbase-coder services status
+```
+
+If an iPhone call reaches the room token endpoint but hangs during LiveKit
+connection, see [Troubleshooting](troubleshooting.md) for the Tailscale and
+LiveKit listener checks.
+
+## Action Button Mute Shortcut
+
+The iOS app exposes an App Intent named `Toggle Voice Session Mute`, with the
+shortcut title `Toggle Mute`. It toggles the microphone mute state for the
+currently connected Openbase voice session; if there is no active connected
+voice session, it has no CLI-side effect.
+
+To bind it to the iPhone Action Button/action key, create or choose an iOS
+Shortcut that runs the Openbase `Toggle Voice Session Mute` action, then set the
+Action Button to run that shortcut in iOS Settings. Supported shortcut phrases
+include `Toggle Openbase mute` and `Toggle voice session mute in Openbase`.
+
+## App Tabs
 
 The Openbase iOS app (`ios/Openbase/OpenbaseApp.swift`) has four tabs backed by this CLI server.
 

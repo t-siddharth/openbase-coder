@@ -4,15 +4,23 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import os
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from asgiref.sync import async_to_sync
 from django.http import FileResponse
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
+from super_agents.app_server_client import DEFAULT_STATE_FILE
+from super_agents.state import SessionRecord, read_state_file_locked
 
 from openbase_coder_cli.mcp.projects import get_recent_projects as _get_recent_projects
+from openbase_coder_cli.mcp.session_manager import get_session_manager
 from openbase_coder_cli.openbase_coder_cli_app.item_tags import (
     report_tags,
     report_tags_payload,
@@ -27,6 +35,33 @@ REPORTS_MAX_FILES = 200
 REPORTS_MAX_TEXT_BYTES = 1024 * 1024
 REPORTS_MAX_IMAGE_BYTES = 5 * 1024 * 1024
 HOME_REPORTS_PROJECT_DIR = Path.home()
+REPORT_ACTION_PROMPT_MAX_CHARS = 24000
+REPORT_ORIGIN_TIME_WINDOW_SECONDS = 10 * 60
+SUPER_AGENTS_STATE_FILE_ENV = "SUPER_AGENTS_STATE_FILE"
+REPORT_THREAD_ID_RE = re.compile(
+    r"(?im)^\s*(?:super agent\s+)?thread\s+id\s*:\s*([A-Za-z0-9._:-]+)\s*$"
+)
+REPORT_THREAD_NAME_RE = re.compile(
+    r"(?im)^\s*super agent thread name\s*:\s*(.+?)\s*$"
+)
+ACTION_HEADING_RE = re.compile(
+    r"(?i)^#{1,6}\s*(action items?|next steps?|follow[- ]?ups?|todo|to do|implementation|recommendations?)\b"
+)
+MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}\s+")
+CHECKBOX_ACTION_RE = re.compile(r"(?im)^\s*(?:[-*]|\d+[.)])\s+\[\s\]\s+\S.*$")
+ACTION_LINE_RE = re.compile(
+    r"(?im)^\s*(?:[-*]|\d+[.)])\s+(?:\[[ xX]\]\s*)?"
+    r"(?:action item|todo|to do|implement|fix|start|add|update|remove|investigate|follow up|follow-up)\b.*$"
+)
+
+
+@dataclass(frozen=True)
+class ReportActionOrigin:
+    thread_id: str
+    label: str | None = None
+    agent_name: str | None = None
+    source: str = "unknown"
+
 
 def _reports_dir(project_path: str) -> Path:
     return Path(project_path).expanduser().resolve() / REPORTS_DIRECTORY
@@ -164,6 +199,212 @@ def _resolve_reports_file(project_path: str, relative_path: str) -> Path:
     return candidate
 
 
+def _super_agents_state_path() -> Path:
+    configured = os.environ.get(SUPER_AGENTS_STATE_FILE_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return DEFAULT_STATE_FILE
+
+
+def _extract_report_action_items(content: str) -> list[str]:
+    action_items: list[str] = []
+    seen: set[str] = set()
+
+    def add(line: str) -> None:
+        normalized = line.strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            action_items.append(normalized)
+
+    lines = content.splitlines()
+    in_action_section = False
+    for line in lines:
+        if MARKDOWN_HEADING_RE.match(line):
+            in_action_section = bool(ACTION_HEADING_RE.match(line))
+            if in_action_section:
+                add(line)
+            continue
+        if in_action_section:
+            if line.strip():
+                add(line)
+
+    for pattern in (CHECKBOX_ACTION_RE, ACTION_LINE_RE):
+        for match in pattern.finditer(content):
+            add(match.group(0))
+
+    return action_items[:80]
+
+
+def _parse_report_thread_id(content: str) -> str | None:
+    match = REPORT_THREAD_ID_RE.search(content)
+    if not match:
+        return None
+    return match.group(1).strip() or None
+
+
+def _parse_report_thread_name(content: str) -> str | None:
+    match = REPORT_THREAD_NAME_RE.search(content)
+    if not match:
+        return None
+    return match.group(1).strip() or None
+
+
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return None
+
+
+def _session_sort_time(session: SessionRecord) -> datetime:
+    return (
+        _parse_iso_timestamp(session.last_finished_at)
+        or _parse_iso_timestamp(session.last_started_at)
+        or _parse_iso_timestamp(session.updated_at)
+        or datetime.fromtimestamp(0, tz=UTC)
+    )
+
+
+def _session_report_delta_seconds(
+    session: SessionRecord,
+    report_updated_at: float,
+) -> float:
+    report_time = datetime.fromtimestamp(report_updated_at, tz=UTC)
+    values = [
+        session.last_finished_at,
+        session.last_started_at,
+        session.last_event_at,
+        session.updated_at,
+    ]
+    if session.turns:
+        for turn in session.turns.values():
+            values.extend([turn.finished_at, turn.updated_at, turn.started_at])
+
+    deltas = [
+        abs((report_time - parsed).total_seconds())
+        for parsed in (_parse_iso_timestamp(value) for value in values)
+        if parsed is not None
+    ]
+    return min(deltas) if deltas else float("inf")
+
+
+def _session_matches_cwd(session: SessionRecord, project_path: Path) -> bool:
+    if not session.cwd:
+        return False
+    try:
+        return Path(session.cwd).expanduser().resolve() == project_path
+    except OSError:
+        return False
+
+
+def _origin_from_session(session: SessionRecord, source: str) -> ReportActionOrigin:
+    return ReportActionOrigin(
+        thread_id=session.thread_id,
+        label=session.label,
+        agent_name=session.agent_name,
+        source=source,
+    )
+
+
+def _resolve_report_origin(
+    content: str,
+    project_path: Path,
+    report_updated_at: float,
+) -> tuple[ReportActionOrigin | None, str | None]:
+    state = read_state_file_locked(_super_agents_state_path())
+    explicit_thread_id = _parse_report_thread_id(content)
+    if explicit_thread_id:
+        session = state.sessions.get(explicit_thread_id)
+        if session is not None:
+            return _origin_from_session(session, "report_thread_id"), None
+        return ReportActionOrigin(
+            thread_id=explicit_thread_id,
+            source="report_thread_id",
+        ), None
+
+    explicit_name = _parse_report_thread_name(content)
+    if explicit_name:
+        label_matches = [
+            session for session in state.sessions.values() if session.label == explicit_name
+        ]
+        cwd_matches = [
+            session
+            for session in label_matches
+            if _session_matches_cwd(session, project_path)
+        ]
+        matches = cwd_matches or label_matches
+        if matches:
+            selected = sorted(matches, key=_session_sort_time, reverse=True)[0]
+            return _origin_from_session(selected, "report_thread_name"), None
+        return None, f"No Super Agent thread named {explicit_name!r} was found."
+
+    cwd_matches = [
+        session
+        for session in state.sessions.values()
+        if _session_matches_cwd(session, project_path)
+    ]
+    if len(cwd_matches) == 1:
+        return _origin_from_session(cwd_matches[0], "project_thread"), None
+    if len(cwd_matches) > 1:
+        scored = sorted(
+            (
+                (_session_report_delta_seconds(session, report_updated_at), session)
+                for session in cwd_matches
+            ),
+            key=lambda item: item[0],
+        )
+        close_matches = [
+            item
+            for item in scored
+            if item[0] <= REPORT_ORIGIN_TIME_WINDOW_SECONDS
+        ]
+        if len(close_matches) == 1:
+            return _origin_from_session(
+                close_matches[0][1],
+                "project_thread_report_time",
+            ), None
+        return (
+            None,
+            "Multiple Super Agent threads match this project, and the report does not identify which one created it.",
+        )
+
+    return (
+        None,
+        "The originating Super Agent thread could not be determined from this report.",
+    )
+
+
+def _report_action_prompt(
+    *,
+    project_path: Path,
+    relative_path: str,
+    content: str,
+    action_items: list[str],
+) -> str:
+    excerpt = content
+    truncated = False
+    if len(excerpt) > REPORT_ACTION_PROMPT_MAX_CHARS:
+        excerpt = excerpt[:REPORT_ACTION_PROMPT_MAX_CHARS].rstrip()
+        truncated = True
+
+    action_text = "\n".join(action_items)
+    truncation_note = "\n\nThe report content below was truncated for prompt size." if truncated else ""
+    return (
+        "Implement the action items from this report in the same project.\n\n"
+        f"Project path: {project_path}\n"
+        f"Report file: .reports/{relative_path}\n\n"
+        "Focus on the report's actionable implementation work. Inspect the code first, "
+        "keep the change scoped to the report, preserve existing behavior outside the "
+        "requested work, and run focused verification when practical.\n\n"
+        "Detected action items:\n"
+        f"{action_text}\n\n"
+        f"Report content:{truncation_note}\n\n"
+        f"{excerpt}"
+    )
+
+
 @api_view(["GET"])
 def project_reports(request):
     """List developer communication files for a project."""
@@ -200,6 +441,102 @@ def global_reports_projects(request):
 def all_project_reports(request):
     """List all report artifacts across recent and global report sources."""
     return Response({"items": _all_reports_items()})
+
+
+@api_view(["POST"])
+def project_reports_action(request):
+    """Start an implementation turn for actionable report items."""
+    project_path = str(request.data.get("path", "")).strip()
+    relative_path = str(request.data.get("file", "")).strip()
+    if not project_path:
+        return Response(
+            {"error": "path is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    resolved = Path(project_path).expanduser().resolve()
+    if not resolved.is_dir():
+        return Response(
+            {"error": f"Directory not found: {resolved}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        file_path = _resolve_reports_file(str(resolved), relative_path)
+    except FileNotFoundError:
+        return Response(
+            {"error": f"File not found: {relative_path}"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    except ValueError as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    kind = _reports_kind(file_path)
+    if kind not in {"markdown", "text"}:
+        return Response(
+            {
+                "error": "Only Markdown or text reports can start implementation turns.",
+                "reason": "unsupported_report_kind",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    size = file_path.stat().st_size
+    if size > REPORTS_MAX_TEXT_BYTES:
+        return Response(
+            {
+                "error": "Report is too large to inspect for action items.",
+                "reason": "report_too_large",
+            },
+            status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        )
+
+    content = file_path.read_text(encoding="utf-8", errors="replace")
+    action_items = _extract_report_action_items(content)
+    if not action_items:
+        return Response(
+            {
+                "error": "No action items were found in this report.",
+                "reason": "no_action_items",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    origin, origin_error = _resolve_report_origin(content, resolved, file_path.stat().st_mtime)
+    if origin is None:
+        return Response(
+            {
+                "error": origin_error or "The originating Super Agent thread could not be determined.",
+                "reason": "origin_unknown",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    prompt = _report_action_prompt(
+        project_path=resolved,
+        relative_path=relative_path,
+        content=content,
+        action_items=action_items,
+    )
+    try:
+        turn_id = async_to_sync(get_session_manager().start_turn)(origin.thread_id, prompt)
+    except ValueError as exc:
+        return Response(
+            {"error": str(exc), "reason": "turn_start_failed"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    return Response(
+        {
+            "status": "started",
+            "thread_id": origin.thread_id,
+            "turn_id": turn_id,
+            "thread_name": origin.label,
+            "agent_name": origin.agent_name,
+            "origin_source": origin.source,
+        },
+        status=status.HTTP_201_CREATED,
+    )
 
 
 @api_view(["GET", "DELETE", "PATCH"])

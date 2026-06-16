@@ -118,6 +118,7 @@ If you installed with `uv tool`, omit `uvx --python 3.13` from those commands.
 - [Commands](docs/commands/index.md)
 - [Configuration](docs/configuration.md)
 - [Files and Paths](docs/files-and-paths.md)
+- [iOS App](docs/ios-tabs.md)
 - [Troubleshooting](docs/troubleshooting.md)
 
 ## Development

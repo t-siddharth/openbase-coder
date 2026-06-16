@@ -60,6 +60,17 @@ def _set_report_tags(project_path: Path, relative_path: str, tags: list[str]):
     return views.project_reports_tags(request)
 
 
+def _start_report_action(project_path: Path, relative_path: str):
+    factory = APIRequestFactory()
+    request = factory.post(
+        "/api/projects/reports/action/",
+        {"path": str(project_path), "file": relative_path},
+        format="json",
+    )
+    force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+    return views.project_reports_action(request)
+
+
 def _get_global_reports_projects():
     factory = APIRequestFactory()
     request = factory.get("/api/projects/reports/global/")
@@ -383,3 +394,129 @@ def test_report_tags_endpoint_rejects_missing_report(
 
     assert response.status_code == 404
     assert response.data["error"] == "File not found: missing.md"
+
+
+def test_project_reports_action_reports_no_action_items(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    reports = project / ".reports"
+    reports.mkdir(parents=True)
+    (reports / "summary.md").write_text(
+        "# Summary\n\nThis is a passive report.",
+        encoding="utf-8",
+    )
+
+    response = _start_report_action(project, "summary.md")
+
+    assert response.status_code == 400
+    assert response.data["reason"] == "no_action_items"
+
+
+def test_project_reports_action_reports_unknown_origin(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    reports = project / ".reports"
+    reports.mkdir(parents=True)
+    (reports / "actions.md").write_text(
+        "# Action Items\n\n- [ ] Implement the report action.",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SUPER_AGENTS_STATE_FILE", str(tmp_path / "state.json"))
+
+    response = _start_report_action(project, "actions.md")
+
+    assert response.status_code == 400
+    assert response.data["reason"] == "origin_unknown"
+
+
+def test_project_reports_action_starts_originating_super_agent_turn(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    reports = project / ".reports"
+    reports.mkdir(parents=True)
+    (reports / "actions.md").write_text(
+        "\n".join(
+            [
+                "Super Agent thread id: thread-123",
+                "",
+                "# Action Items",
+                "",
+                "- [ ] Implement the report action.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    calls: list[tuple[str, str]] = []
+
+    class FakeSessionManager:
+        async def start_turn(self, thread_id: str, prompt: str) -> str:
+            calls.append((thread_id, prompt))
+            return "turn-456"
+
+    monkeypatch.setattr(
+        report_views,
+        "get_session_manager",
+        lambda: FakeSessionManager(),
+    )
+    response = _start_report_action(project, "actions.md")
+
+    assert response.status_code == 201
+    assert response.data["status"] == "started"
+    assert response.data["thread_id"] == "thread-123"
+    assert response.data["turn_id"] == "turn-456"
+    assert calls
+    thread_id, prompt = calls[0]
+    assert thread_id == "thread-123"
+    assert "Implement the action items from this report" in prompt
+    assert "- [ ] Implement the report action." in prompt
+
+
+def test_project_reports_action_infers_origin_from_super_agents_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    reports = project / ".reports"
+    reports.mkdir(parents=True)
+    (reports / "actions.md").write_text(
+        "# Action Items\n\n- [ ] Implement the report action.",
+        encoding="utf-8",
+    )
+    state_file = tmp_path / "state.json"
+    state_file.write_text(
+        (
+            '{"sessions":{"thread-123":{'
+            '"threadId":"thread-123",'
+            '"label":"report-agent",'
+            '"agentName":"George",'
+            f'"cwd":"{project.resolve()}",'
+            '"updatedAt":"2026-06-09T10:00:00.000Z",'
+            '"lastStatus":"completed"'
+            "}}}"
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SUPER_AGENTS_STATE_FILE", str(state_file))
+    calls: list[tuple[str, str]] = []
+
+    class FakeSessionManager:
+        async def start_turn(self, thread_id: str, prompt: str) -> str:
+            calls.append((thread_id, prompt))
+            return "turn-456"
+
+    monkeypatch.setattr(
+        report_views,
+        "get_session_manager",
+        lambda: FakeSessionManager(),
+    )
+    response = _start_report_action(project, "actions.md")
+
+    assert response.status_code == 201
+    assert response.data["thread_id"] == "thread-123"
+    assert response.data["thread_name"] == "report-agent"
+    assert response.data["agent_name"] == "George"
+    assert response.data["origin_source"] == "project_thread"
+    assert calls[0][0] == "thread-123"

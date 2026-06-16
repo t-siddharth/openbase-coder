@@ -117,4 +117,4 @@ This stores tokens in `~/.openbase/auth.json` for JWT-based auth flows.
 - Run plugin bootstrap flow: `uvx --python 3.13 openbase-coder bootstrap <name> --params-file <file.json>`
 - Review environment and auth settings in [Configuration](configuration.md)
 - See all runtime artifacts in [Files and Paths](files-and-paths.md)
-- Map backend behavior to the iOS UI in [iOS App Tabs](ios-tabs.md)
+- Map backend behavior to the iOS UI in [iOS App](ios-tabs.md)
