@@ -4,7 +4,7 @@ description = "OpenBase Coder CLI with embedded server"
 authors = [{ name = "Gabe Montague", email = "gabe@openbase.com" }]
 license = "AGPL-3.0-only"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 dynamic = ["version"]
 dependencies = [
     "click>=8.2.0",
