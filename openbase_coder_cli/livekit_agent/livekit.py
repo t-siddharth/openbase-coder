@@ -70,6 +70,7 @@ from openbase_coder_cli.paths import (
     CODEX_DIRECT_LIVEKIT_INSTRUCTIONS_PATH,
     CODEX_DISPATCHER_CONFIG_PATH,
     CODEX_DISPATCHER_INSTRUCTIONS_PATH,
+    OPENBASE_BASE_DIR,
 )
 from openbase_coder_cli.stt_providers import (
     ASSEMBLYAI_STT_PROVIDER_ID,
@@ -90,7 +91,31 @@ from openbase_coder_cli.tts_providers import (
 
 logger = logging.getLogger(__name__)
 
-load_dotenv(".env")
+
+def _canonical_env_path() -> Path:
+    """Path to the installed Openbase env file (the one the launchd/systemd
+    wrapper sources). The agent's cwd is ``{workspace}/cli`` which has no
+    ``.env``, so relying on a cwd-relative load silently picks up nothing."""
+    try:
+        from openbase_coder_cli.services.installation import InstallationConfig
+
+        if InstallationConfig.exists():
+            return Path(InstallationConfig.load().env_file).expanduser()
+    except Exception:
+        pass
+    return OPENBASE_BASE_DIR / ".env"
+
+
+def _load_openbase_env(*, override: bool = False) -> None:
+    """Load env vars from the cwd ``.env`` (legacy) and the canonical installed
+    env file. With ``override=True`` the on-disk values win, so a worker that
+    started before a key was written to ``.env`` can self-heal on the next job
+    instead of crash-looping on a now-stale environment."""
+    load_dotenv(".env", override=override)
+    load_dotenv(_canonical_env_path(), override=override)
+
+
+_load_openbase_env()
 
 os.environ.setdefault("LIVEKIT_URL", "ws://localhost:7880")
 os.environ.setdefault("CODEX_APP_SERVER_URL", "ws://127.0.0.1:4500")
@@ -103,6 +128,25 @@ ASSEMBLY_AI_API_KEY = os.getenv("ASSEMBLY_AI_API_KEY") or os.getenv(
 )
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 CARTESIA_API_KEY = os.getenv("CARTESIA_API_KEY")
+
+
+def _refresh_audio_credentials() -> None:
+    """Re-read audio provider keys from the on-disk env file.
+
+    The worker process captures these once at import. If ``.env`` is written
+    *after* the worker starts (e.g. a key or cloud token added during setup),
+    the long-running process otherwise keeps a stale environment and every job
+    crash-loops (e.g. ``Cartesia API key is required``). Refreshing per job lets
+    it recover without a manual service restart."""
+    global ASSEMBLY_AI_API_KEY, DEEPGRAM_API_KEY, CARTESIA_API_KEY
+    _load_openbase_env(override=True)
+    ASSEMBLY_AI_API_KEY = os.getenv("ASSEMBLY_AI_API_KEY") or os.getenv(
+        "ASSEMBLYAI_API_KEY"
+    )
+    DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+    CARTESIA_API_KEY = os.getenv("CARTESIA_API_KEY")
+
+
 CARTESIA_VOICE_ID = os.getenv("CARTESIA_VOICE_ID", DEFAULT_CARTESIA_VOICE_ID)
 CARTESIA_ANNOUNCER_VOICE_ID = os.getenv(
     "CARTESIA_ANNOUNCER_VOICE_ID", DEFAULT_CARTESIA_ANNOUNCER_VOICE_ID
@@ -2871,6 +2915,7 @@ async def _transfer_voice_route(
 
 @server.rtc_session(agent_name=LIVEKIT_DISPATCH_AGENT_NAME)
 async def livekit_agent(ctx: JobContext):
+    _refresh_audio_credentials()
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
