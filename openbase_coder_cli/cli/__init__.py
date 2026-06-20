@@ -19,6 +19,7 @@ from .claude import claude
 from .claude_chrome import claude_chrome
 from .codex_sync import codex_sync
 from .computer_use import computer_use
+from .desktop import desktop
 from .doctor import doctor
 from .plugins import plugins
 from .restart import restart
@@ -60,6 +61,7 @@ main.add_command(setup)
 main.add_command(backend)
 main.add_command(services)
 main.add_command(doctor)
+main.add_command(desktop)
 main.add_command(login)
 main.add_command(logout)
 main.add_command(auth)
