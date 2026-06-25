@@ -5,11 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import shutil
 import sqlite3
 import subprocess
-import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -20,6 +18,14 @@ from openbase_coder_cli.paths import (
     CODEX_HOME_DIR,
     NORMAL_CODEX_HOME_DIR,
     OPENBASE_BASE_DIR,
+)
+
+from .thread_sync_common import (
+    fingerprint_matches,
+    read_scoped_ledger,
+    record_sync_conflict,
+    record_synced_pair,
+    write_scoped_ledger,
 )
 
 STATE_DB_NAME = "state_5.sqlite"
@@ -853,9 +859,10 @@ def _fingerprint_from_rollout_path(
 
 
 def _fingerprint_matches(value: Any, fingerprint: dict[str, Any]) -> bool:
-    return isinstance(value, dict) and all(
-        value.get(key) == fingerprint.get(key)
-        for key in ("rollout_sha256", "rollout_size", "updated_at_ms", "updated_at")
+    return fingerprint_matches(
+        value,
+        fingerprint,
+        keys=("rollout_sha256", "rollout_size", "updated_at_ms", "updated_at"),
     )
 
 
@@ -866,14 +873,16 @@ def _record_synced_pair(
     voice_fingerprint: dict[str, Any],
     reason: str,
 ) -> None:
-    ledger[thread_id] = {
-        "thread_id": thread_id,
-        "normal": normal_fingerprint,
-        "voice": voice_fingerprint,
-        "status": "synced",
-        "reason": reason,
-        "synced_at": time.time(),
-    }
+    record_synced_pair(
+        ledger,
+        entity_key="thread_id",
+        entity_id=thread_id,
+        left_key="normal",
+        left_fingerprint=normal_fingerprint,
+        right_key="voice",
+        right_fingerprint=voice_fingerprint,
+        reason=reason,
+    )
 
 
 def _record_conflict(
@@ -883,39 +892,29 @@ def _record_conflict(
     voice_fingerprint: dict[str, Any],
     reason: str,
 ) -> None:
-    ledger[thread_id] = {
-        "thread_id": thread_id,
-        "normal": normal_fingerprint,
-        "voice": voice_fingerprint,
-        "status": "conflict",
-        "reason": reason,
-        "synced_at": time.time(),
-    }
+    record_sync_conflict(
+        ledger,
+        entity_key="thread_id",
+        entity_id=thread_id,
+        left_key="normal",
+        left_fingerprint=normal_fingerprint,
+        right_key="voice",
+        right_fingerprint=voice_fingerprint,
+        reason=reason,
+    )
 
 
 def _read_sync_ledger(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        logger.warning("codex_thread_sync event=ledger_malformed path=%s", path)
-        return {}
-    if not isinstance(raw, dict):
-        return {}
-    entries = raw.get("threads")
-    return entries if isinstance(entries, dict) else {}
+    return read_scoped_ledger(
+        path,
+        scope_key="threads",
+        logger=logger,
+        malformed_event="codex_thread_sync event=ledger_malformed",
+    )
 
 
 def _write_sync_ledger(path: Path, ledger: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps({"threads": ledger}, indent=2, sort_keys=True) + "\n"
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent, delete=False
-    ) as tmp:
-        tmp.write(payload)
-        tmp_name = tmp.name
-    os.replace(tmp_name, path)
+    write_scoped_ledger(path, scope_key="threads", ledger=ledger)
 
 
 def _active_super_agent_thread_ids(

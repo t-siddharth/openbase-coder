@@ -6,6 +6,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import textwrap
 import time
 from pathlib import Path
@@ -19,6 +20,7 @@ from openbase_coder_cli.paths import (
     OPENBASE_BASE_DIR,
     PLIST_DIR,
 )
+from openbase_coder_cli.runtime import current_runtime_package
 from openbase_coder_cli.services.definitions import (
     SERVICES,
     ServiceDefinition,
@@ -48,6 +50,8 @@ def _resolve_binary(name: str, homebrew_fallback: str | None = None) -> str:
 
 
 def _workspace_binary_candidates(config: InstallationConfig, name: str) -> list[Path]:
+    if not config.workspace_path:
+        return []
     workspace = Path(config.workspace_path)
     return [
         workspace / ".venv" / "bin" / name,
@@ -81,6 +85,12 @@ def _resolve_binary_with_preferred_paths(
 
 
 def _resolve_binaries(config: InstallationConfig) -> dict[str, str]:
+    runtime_package = current_runtime_package()
+    runtime_workdir = (
+        str(runtime_package.root)
+        if runtime_package is not None
+        else (config.workspace_path or str(OPENBASE_BASE_DIR))
+    )
     return {
         "uv": _resolve_binary_with_preferred_paths(
             "uv",
@@ -91,13 +101,24 @@ def _resolve_binaries(config: InstallationConfig) -> dict[str, str]:
             "codex",
             _nvm_binary_candidates("codex"),
         ),
-        "livekit": _resolve_binary(
-            "livekit-server", "/opt/homebrew/bin/livekit-server"
+        "livekit": _resolve_binary_with_preferred_paths(
+            "livekit-server",
+            [Path(config.livekit_server_path)] if config.livekit_server_path else [],
+            "/opt/homebrew/bin/livekit-server",
         ),
+        "python": config.python_path or sys.executable,
         "openbase_coder": _resolve_binary_with_preferred_paths(
             "openbase-coder",
-            _workspace_binary_candidates(config, "openbase-coder"),
+            [
+                *(
+                    [Path(config.package_path) / "bin" / "openbase-coder"]
+                    if config.package_path
+                    else []
+                ),
+                *_workspace_binary_candidates(config, "openbase-coder"),
+            ],
         ),
+        "runtime_workdir": runtime_workdir,
     }
 
 
@@ -300,7 +321,11 @@ def generate_plist(svc: ServiceDefinition, config: InstallationConfig) -> Path:
     label = _service_label(svc)
     wrapper = _wrapper_path(svc)
     workdir = svc.workdir_template.format(
-        workspace=config.workspace_path, data_dir=str(OPENBASE_BASE_DIR)
+        workspace=config.workspace_path,
+        data_dir=str(OPENBASE_BASE_DIR),
+        runtime_workdir=config.package_path
+        or config.workspace_path
+        or str(OPENBASE_BASE_DIR),
     )
     log_dir = DEFAULT_LOG_DIR
 

@@ -10,6 +10,9 @@ from django.contrib import admin
 from django.urls import include, path, re_path
 
 from openbase_coder_cli.config.proxy import serve_console
+from openbase_coder_cli.openbase_coder_cli_app.plugins_tools import (
+    plugin_console_asset,
+)
 from openbase_coder_cli.plugins.store import load_registry
 
 logger = logging.getLogger(__name__)
@@ -17,6 +20,10 @@ logger = logging.getLogger(__name__)
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/", include("openbase_coder_cli.openbase_coder_cli_app.urls")),
+    re_path(
+        r"^openbase-plugin-assets/(?P<plugin_id>[^/]+)/(?P<page_key>[^/]+)/(?P<path>.*)$",
+        plugin_console_asset,
+    ),
     path("", include("mcp_server.urls")),  # MCP at /mcp
     # Catch-all: serve built React console (SPA)
     re_path(r"^(?P<path>.*)$", serve_console),

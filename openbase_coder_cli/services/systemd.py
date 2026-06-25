@@ -65,7 +65,11 @@ def generate_unit(svc: ServiceDefinition, config: InstallationConfig) -> Path:
 
     wrapper = _wrapper_path(svc)
     workdir = svc.workdir_template.format(
-        workspace=config.workspace_path, data_dir=str(OPENBASE_BASE_DIR)
+        workspace=config.workspace_path,
+        data_dir=str(OPENBASE_BASE_DIR),
+        runtime_workdir=config.package_path
+        or config.workspace_path
+        or str(OPENBASE_BASE_DIR),
     )
     log_path = _log_path(svc)
 

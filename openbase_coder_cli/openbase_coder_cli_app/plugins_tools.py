@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import mimetypes
+from pathlib import Path
+
 import click
+from django.http import FileResponse, Http404, HttpRequest, HttpResponse
 from rest_framework import status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
+from openbase_coder_cli.paths import PLUGIN_CONSOLE_ASSETS_DIR
 from openbase_coder_cli.plugins.api import (
     get_console_registry_payload,
     get_plugin_payload,
@@ -40,9 +46,31 @@ def plugin_detail(request, plugin_id):
 
 
 @api_view(["GET"])
+@permission_classes([AllowAny])
 def plugin_console_registry(request):
     """Return generated console registry payload."""
     return Response(get_console_registry_payload())
+
+
+def plugin_console_asset(
+    request: HttpRequest, plugin_id: str, page_key: str, path: str = ""
+) -> HttpResponse:
+    """Serve static iframe assets installed by console plugins."""
+    del request
+    relative = Path(path or "index.html")
+    if relative.is_absolute() or ".." in relative.parts:
+        raise Http404("Plugin asset not found")
+
+    root = (PLUGIN_CONSOLE_ASSETS_DIR / plugin_id / page_key).resolve()
+    target = (root / relative).resolve()
+    if not target.is_file() or not target.is_relative_to(root):
+        raise Http404("Plugin asset not found")
+
+    content_type, _encoding = mimetypes.guess_type(str(target))
+    return FileResponse(
+        open(target, "rb"),
+        content_type=content_type or "application/octet-stream",
+    )
 
 
 @api_view(["GET"])

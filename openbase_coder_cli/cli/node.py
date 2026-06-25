@@ -14,7 +14,7 @@ def run_workspace_package_command(
     """Run a package-manager command for a workspace package."""
     package_manager = _resolve_package_manager(workspace_dir, package_dir)
     if package_manager is None:
-        click.echo("'npm' or 'pnpm' not found on PATH, skipping console build.")
+        click.echo("'npm' or 'pnpm' not found on PATH, skipping package command.")
         return False
 
     executable, command_prefix = package_manager
@@ -40,6 +40,10 @@ def _resolve_package_manager(
         pnpm_bin = _which_node_binary("pnpm")
         if pnpm_bin:
             return pnpm_bin, ()
+        raise click.ClickException(
+            "pnpm is required for this workspace because it uses pnpm workspace "
+            "metadata or workspace:* dependencies. Install pnpm, then rerun setup."
+        )
 
     npm_bin = _which_node_binary("npm")
     if npm_bin:

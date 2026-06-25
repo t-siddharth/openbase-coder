@@ -17,6 +17,7 @@ from .boilersync import boilersync
 from .bootstrap import bootstrap
 from .claude import claude
 from .claude_chrome import claude_chrome
+from .claude_sync import claude_sync
 from .codex_sync import codex_sync
 from .computer_use import computer_use
 from .desktop import desktop
@@ -71,6 +72,7 @@ main.add_command(restart)
 main.add_command(user)
 main.add_command(boilersync)
 main.add_command(codex_sync)
+main.add_command(claude_sync)
 main.add_command(claude)
 main.add_command(claude_chrome)
 main.add_command(computer_use)

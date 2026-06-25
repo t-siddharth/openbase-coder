@@ -5,73 +5,57 @@ This guide sets up Openbase locally using the `openbase-coder` CLI.
 ## Prerequisites
 
 - macOS (`setup` and `services` use launchd) or Linux (systemd user services). The `computer-use` CLI is Linux-only for Openbase DevSpace Xorg/DCV desktops; macOS agents use native Computer Use tooling.
-- Python 3.13+
-- Git
-- `uv` (recommended)
-- `npm` (for console build during setup)
-- `livekit-server` on your `PATH` (for voice services)
 - Tailscale, signed in and connected, for iOS app access to the local CLI
+- Codex CLI authenticated in your normal user account when using the `codex` backend
 
-Optional but recommended:
+The standalone macOS installer bundles Python, the Openbase CLI Python
+dependencies, LiveKit server, and the built console. Git, `uv`, and Node/npm are
+only needed for source installs, plugin development with React component pages,
+or Openbase Coder development.
 
-- `multi` on your `PATH` for automatic workspace sub-repo sync
+Local Kokoro/MLX audio is optional. When setup is run with
+`--audio-provider local`, the CLI installs the local-audio Python packages into
+the bundled runtime and downloads the Kokoro voices and MLX Whisper model.
+
+Optional:
+
+- Openbase Cloud login for the `openbase_cloud` backend
+- Claude Code login for the `claude-code` backend
 
 ## Install
 
-The preferred first-time setup path is `uvx`, which runs `openbase-coder` in an
-isolated `uv` tool environment without requiring a separate install step:
+The preferred first-time setup path is the standalone installer:
 
 ```bash
-uvx --python 3.13 openbase-coder setup
-```
-
-Use a persistent install when you want `openbase-coder` to remain on your
-`PATH` after setup. The `uv tool` path is preferred:
-
-=== "uv tool"
-
-    ```bash
-    uv tool install --python 3.13 openbase-coder
-    ```
-
-=== "pipx"
-
-    ```bash
-    pipx install --python python3.13 openbase-coder
-    ```
-
-=== "pip"
-
-    ```bash
-    pip install openbase-coder
-    ```
-
-Verify a persistent install:
-
-```bash
-openbase-coder --version
-```
-
-When using `uvx`, run one-off commands as `uvx --python 3.13 openbase-coder ...`.
-
-## First-Time Setup
-
-If you used the `uvx` one-liner above, setup has already started. Otherwise run:
-
-```bash
+curl -fsSL https://raw.githubusercontent.com/openbase-community/openbase-coder/main/cli/scripts/install.sh | sh
 openbase-coder setup
 ```
 
+For fully local speech-to-text and text-to-speech:
+
+```bash
+openbase-coder setup --audio-provider local
+```
+
+For source development, run setup in dev-workspace mode. This clones the
+workspace, builds the console from source, and uses workspace runtime assets:
+
+```bash
+uvx --python 3.13 openbase-coder setup --dev-workspace
+```
+
+## First-Time Setup
+
 What setup does:
 
-1. Clones or updates the Openbase workspace at `~/.openbase/workspace`.
+1. Detects the bundled runtime package, or clones/updates `~/.openbase/workspace` in dev-workspace mode.
 2. Writes `~/.openbase/installation.json`.
 3. Generates `~/.openbase/.env` (if it does not already exist).
 4. Maintains editable `~/.openbase/codex_home/AGENTS.md` and `~/.openbase/claude_config/CLAUDE.md` files, and links shared instruction files into `~/.openbase/instructions`.
-5. Symlinks workspace skills into both Openbase Codex and Claude config skill homes.
-6. Initializes the CLI workspace and bundled LiveKit worker (`uv sync`, LiveKit model downloads).
+5. Symlinks bundled or workspace skills into both Openbase Codex and Claude config skill homes.
+6. Initializes the CLI workspace and LiveKit model downloads in dev-workspace mode.
 7. Writes Codex app-server defaults such as `CODEX_MODEL=gpt-5.5`, `CODEX_MODEL_REASONING_EFFORT=high`, `CODEX_SERVICE_TIER=fast`, `CODEX_APP_SERVER_URL`, and `LIVEKIT_CODEX_THREAD_CWD`.
-8. Builds `console`.
+8. Uses the bundled console build, or builds `console` in dev-workspace mode.
 9. Installs background services — launchd on macOS, systemd user units on Linux (unless `--skip-services`).
 10. Configures Tailscale Serve routes for iOS access to the local CLI API and LiveKit:
     - `tailscale serve --bg --http=18080 http://127.0.0.1:7999`
@@ -84,21 +68,21 @@ auth, service, and health-check steps from your own terminal.
 ## Start the Server
 
 ```bash
-uvx --python 3.13 openbase-coder server --host 0.0.0.0 --port 7999
+openbase-coder server --host 0.0.0.0 --port 7999
 ```
 
 By default this command:
 
 - Runs Django migrations
 - Runs `collectstatic`
-- Rebuilds the console
+- Uses the bundled console build, or rebuilds the console in dev-workspace mode
 - Starts Gunicorn + Uvicorn worker(s)
 
 ## Health Check
 
 ```bash
-uvx --python 3.13 openbase-coder doctor
-uvx --python 3.13 openbase-coder services status
+openbase-coder doctor
+openbase-coder services status
 ```
 
 ## Uninstalling Openbase
@@ -111,7 +95,7 @@ delete or archive `~/.openbase`.
 ## Authenticate With Openbase Cloud (Optional)
 
 ```bash
-uvx --python 3.13 openbase-coder login --email you@example.com
+openbase-coder login --email you@example.com
 ```
 
 This stores tokens in `~/.openbase/auth.json` for JWT-based auth flows.
@@ -119,9 +103,9 @@ This stores tokens in `~/.openbase/auth.json` for JWT-based auth flows.
 ## Next Steps
 
 - Learn command details in [Commands](commands/index.md)
-- Install your first plugin: `uvx --python 3.13 openbase-coder plugins add <local-repo-or-github-url>`
-- Discover bootstrap commands: `uvx --python 3.13 openbase-coder plugins bootstrappers`
-- Run plugin bootstrap flow: `uvx --python 3.13 openbase-coder bootstrap <name> --params-file <file.json>`
+- Install your first plugin: `openbase-coder plugins add <local-repo-or-github-url>`
+- Discover bootstrap commands: `openbase-coder plugins bootstrappers`
+- Run plugin bootstrap flow: `openbase-coder bootstrap <name> --params-file <file.json>`
 - Review environment and auth settings in [Configuration](configuration.md)
 - See all runtime artifacts in [Files and Paths](files-and-paths.md)
 - Map backend behavior to the iOS UI in [iOS App](ios-tabs.md)

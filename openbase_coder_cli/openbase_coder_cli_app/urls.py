@@ -64,6 +64,8 @@ from openbase_coder_cli.openbase_coder_cli_app.views import (
     stt_settings,
     tag_options,
     thread_detail,
+    thread_device_sync_conflict_resolve,
+    thread_device_sync_conflicts,
     thread_device_sync_status,
     thread_favorite,
     thread_interrupt,
@@ -182,6 +184,16 @@ urlpatterns = [
         "settings/thread-device-sync/",
         thread_device_sync_status,
         name="thread-device-sync-status",
+    ),
+    path(
+        "settings/thread-device-sync/conflicts/",
+        thread_device_sync_conflicts,
+        name="thread-device-sync-conflicts",
+    ),
+    path(
+        "settings/thread-device-sync/conflicts/<str:thread_id>/resolve/",
+        thread_device_sync_conflict_resolve,
+        name="thread-device-sync-conflict-resolve",
     ),
     path(
         "settings/restart/",

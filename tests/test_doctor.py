@@ -3,7 +3,10 @@ from types import SimpleNamespace
 
 from click.testing import CliRunner
 
-from openbase_coder_cli.cli.doctor import _check_livekit_client_credentials
+from openbase_coder_cli.cli.doctor import (
+    _check_agent_auth,
+    _check_livekit_client_credentials,
+)
 
 doctor_cli = importlib.import_module("openbase_coder_cli.cli.doctor")
 
@@ -18,6 +21,32 @@ def _collect_credential_check(env):
         messages.append(("ok", message))
 
     _check_livekit_client_credentials(env, warn, ok)
+    return messages
+
+
+def _collect_auth_check(env, monkeypatch, tmp_path):
+    messages = []
+
+    def ok(message):
+        messages.append(("ok", message))
+
+    def warn(message):
+        messages.append(("warn", message))
+
+    def fail(message):
+        messages.append(("fail", message))
+
+    def action(message):
+        messages.append(("action", message))
+
+    monkeypatch.setattr(
+        doctor_cli.Path,
+        "home",
+        classmethod(lambda cls: tmp_path),
+    )
+    monkeypatch.setattr(doctor_cli, "AUTH_JSON_PATH", tmp_path / "openbase-auth.json")
+    monkeypatch.setattr(doctor_cli, "CODEX_HOME_DIR", tmp_path / "codex_home")
+    _check_agent_auth(env, ok, warn, fail, action)
     return messages
 
 
@@ -77,10 +106,58 @@ def test_livekit_client_credential_check_accepts_separate_credentials():
     ]
 
 
+def test_agent_auth_requires_codex_login_for_codex_backend(monkeypatch, tmp_path):
+    messages = _collect_auth_check(
+        {"OPENBASE_CODING_BACKEND": "codex"}, monkeypatch, tmp_path
+    )
+
+    assert ("action", "Codex auth missing: run 'codex login'") in messages
+
+
+def test_agent_auth_requires_openbase_login_for_cloud_backend(monkeypatch, tmp_path):
+    messages = _collect_auth_check(
+        {"OPENBASE_CODING_BACKEND": "openbase_cloud"}, monkeypatch, tmp_path
+    )
+
+    assert (
+        "action",
+        "Openbase Cloud auth missing: run 'openbase-coder login'",
+    ) in messages
+
+
+def test_agent_auth_requires_claude_login_for_claude_backend(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        doctor_cli,
+        "claude_auth_status",
+        lambda: SimpleNamespace(logged_in=False, raw_output="", returncode=1),
+    )
+
+    messages = _collect_auth_check(
+        {"OPENBASE_CODING_BACKEND": "claude_code"}, monkeypatch, tmp_path
+    )
+
+    assert (
+        "action",
+        "Claude Code auth missing: run 'claude auth login'",
+    ) in messages
+
+
 def test_doctor_allows_optional_stopped_services(monkeypatch, tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text("OPENBASE_CODER_CLI_SECRET_KEY=x\n", encoding="utf-8")
     monkeypatch.setattr(doctor_cli.InstallationConfig, "exists", lambda: True)
+    monkeypatch.setattr(
+        doctor_cli.InstallationConfig,
+        "load",
+        lambda: SimpleNamespace(
+            standalone=False,
+            workspace_path=str(tmp_path),
+            package_path="",
+            python_path="",
+            livekit_server_path="",
+            console_build_dir="",
+        ),
+    )
     monkeypatch.setattr(
         doctor_cli,
         "SERVICES",
@@ -122,8 +199,87 @@ def test_doctor_allows_optional_stopped_services(monkeypatch, tmp_path):
             error=None,
         ),
     )
+    monkeypatch.setattr(doctor_cli, "selected_tts_provider_id", lambda: "cartesia")
+    monkeypatch.setattr(doctor_cli, "selected_stt_provider_id", lambda: "assemblyai")
+    codex_home = tmp_path / "codex_home"
+    codex_home.mkdir()
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "auth.json").write_text("{}", encoding="utf-8")
+    (codex_home / "auth.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_cli.Path,
+        "home",
+        classmethod(lambda cls: tmp_path),
+    )
+    monkeypatch.setattr(doctor_cli, "CODEX_HOME_DIR", codex_home)
 
     result = CliRunner().invoke(doctor_cli.doctor)
 
     assert result.exit_code == 0, result.output
     assert "codex-thread-device-sync: optional (not running" in result.output
+
+
+def test_doctor_reports_missing_tailscale_as_setup_action(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("OPENBASE_CODER_CLI_SECRET_KEY=x\n", encoding="utf-8")
+    monkeypatch.setattr(doctor_cli.InstallationConfig, "exists", lambda: True)
+    monkeypatch.setattr(
+        doctor_cli.InstallationConfig,
+        "load",
+        lambda: SimpleNamespace(
+            standalone=False,
+            workspace_path=str(tmp_path),
+            package_path="",
+            python_path="",
+            livekit_server_path="",
+            console_build_dir="",
+        ),
+    )
+    monkeypatch.setattr(doctor_cli, "SERVICES", [])
+    monkeypatch.setattr(doctor_cli, "_get_listening_sockets", lambda: [])
+    monkeypatch.setattr(doctor_cli, "DEFAULT_ENV_FILE_PATH", env_file)
+    monkeypatch.setattr(
+        doctor_cli,
+        "_parse_env_file",
+        lambda: {
+            "OPENBASE_CODER_CLI_SECRET_KEY": "secret",
+            "LIVEKIT_API_KEY": "server-key",
+            "LIVEKIT_API_SECRET": "server-secret",
+            "LIVEKIT_CLIENT_API_KEY": "client-key",
+            "LIVEKIT_CLIENT_API_SECRET": "client-secret",
+        },
+    )
+    monkeypatch.setattr(
+        doctor_cli,
+        "tailscale_serve_health",
+        lambda: SimpleNamespace(
+            tailscale_available=False,
+            tailscale_running=False,
+            host=None,
+            openbase_url=None,
+            openbase_configured=False,
+            livekit_configured=False,
+            openbase_reachable=False,
+            error="tailscale was not found on PATH.",
+        ),
+    )
+    monkeypatch.setattr(doctor_cli, "selected_tts_provider_id", lambda: "cartesia")
+    monkeypatch.setattr(doctor_cli, "selected_stt_provider_id", lambda: "assemblyai")
+    codex_home = tmp_path / "codex_home"
+    codex_home.mkdir()
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "auth.json").write_text("{}", encoding="utf-8")
+    (codex_home / "auth.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_cli.Path,
+        "home",
+        classmethod(lambda cls: tmp_path),
+    )
+    monkeypatch.setattr(doctor_cli, "CODEX_HOME_DIR", codex_home)
+
+    result = CliRunner().invoke(doctor_cli.doctor)
+
+    assert result.exit_code == 0, result.output
+    assert "SETUP tailscale: not found on PATH" in result.output
+    assert "setup actions" in result.output
+    assert "FAIL" not in result.output

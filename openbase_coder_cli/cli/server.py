@@ -160,6 +160,16 @@ def _build_console() -> None:
         return
 
     config = InstallationConfig.load()
+    if config.console_build_dir:
+        click.echo(f"Using configured console build at {config.console_build_dir}.")
+        return
+    if config.standalone:
+        click.echo("Standalone runtime has no writable console source; skipping build.")
+        return
+    if not config.workspace_path:
+        click.echo("No workspace path configured, skipping console build.")
+        return
+
     console_dir = Path(config.workspace_path) / "console"
     if not console_dir.is_dir():
         click.echo(f"Console directory not found at {console_dir}, skipping build.")

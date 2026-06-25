@@ -5,10 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-import platform
 import shutil
 import sqlite3
-import tempfile
 import time
 import uuid
 from contextlib import closing
@@ -38,6 +36,24 @@ from .thread_import import (
     _thread_rows,
     _thread_safe_for_sync,
 )
+from .thread_sync_common import (
+    DeviceIdentity,
+    device_exported_fingerprints,
+    device_ledger_entry,
+    import_snapshot_decision,
+    parent_fingerprint_for_export,
+    read_device_ledger,
+    record_device_conflict,
+    record_device_snapshot,
+    snapshot_already_imported,
+    write_json_atomic,
+)
+from .thread_sync_common import (
+    get_or_create_device_identity as _get_or_create_device_identity,
+)
+from .thread_sync_common import (
+    read_device_identity as _read_device_identity,
+)
 
 SCHEMA_VERSION = 1
 DEVICE_IDENTITY_NAME = "thread-sync-device.json"
@@ -47,20 +63,6 @@ DEFAULT_DEVICE_IDENTITY_PATH = OPENBASE_BASE_DIR / DEVICE_IDENTITY_NAME
 DEFAULT_LEDGER_PATH = OPENBASE_BASE_DIR / LEDGER_NAME
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class DeviceIdentity:
-    device_id: str
-    device_name: str
-    created_at: float
-
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "device_id": self.device_id,
-            "device_name": self.device_name,
-            "created_at": self.created_at,
-        }
 
 
 @dataclass(frozen=True)
@@ -83,41 +85,20 @@ class ThreadSnapshotResult:
         }
 
 
+class ThreadConflictResolutionError(ValueError):
+    """Raised when a thread sync conflict cannot be resolved."""
+
+
 def get_or_create_device_identity(
     path: Path = DEFAULT_DEVICE_IDENTITY_PATH,
 ) -> DeviceIdentity:
-    existing = read_device_identity(path)
-    if existing is not None:
-        return existing
-    identity = DeviceIdentity(
-        device_id=str(uuid.uuid4()),
-        device_name=platform.node() or "unknown-device",
-        created_at=time.time(),
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _write_json_atomic(path, identity.to_json())
-    return identity
+    return _get_or_create_device_identity(path)
 
 
 def read_device_identity(
     path: Path = DEFAULT_DEVICE_IDENTITY_PATH,
 ) -> DeviceIdentity | None:
-    if not path.exists():
-        return None
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(raw, dict):
-        return None
-    device_id = _string(raw.get("device_id"))
-    if not device_id:
-        return None
-    return DeviceIdentity(
-        device_id=device_id,
-        device_name=_string(raw.get("device_name")) or "unknown-device",
-        created_at=float(raw.get("created_at") or 0),
-    )
+    return _read_device_identity(path)
 
 
 def sync_thread_snapshots_once(
@@ -464,6 +445,174 @@ def thread_snapshot_status(
     }
 
 
+def thread_snapshot_conflicts_payload(
+    *,
+    codex_home: Path = CODEX_HOME_DIR,
+    exchange_dir: Path = DEFAULT_EXCHANGE_DIR,
+    device_identity_path: Path = DEFAULT_DEVICE_IDENTITY_PATH,
+    ledger_path: Path = DEFAULT_LEDGER_PATH,
+) -> dict[str, Any]:
+    identity = read_device_identity(device_identity_path)
+    ledger = _read_exchange_ledger(ledger_path)
+    conflicts: list[dict[str, Any]] = []
+    state_db = codex_home / STATE_DB_NAME
+    for thread_id, thread_ledger in ledger.get("threads", {}).items():
+        if not isinstance(thread_id, str) or not isinstance(thread_ledger, dict):
+            continue
+        conflict = thread_ledger.get("conflict")
+        if not isinstance(conflict, dict):
+            continue
+        source_device_id = _string(conflict.get("source_device_id"))
+        snapshots = _snapshot_records(
+            exchange_dir,
+            thread_id=thread_id,
+            source_device_id=source_device_id,
+        )
+        incoming_snapshot = _snapshot_payload(
+            _find_snapshot_record(
+                snapshots,
+                _string(conflict.get("incoming_fingerprint")),
+            )
+        )
+        latest_remote = _snapshot_payload(_latest_snapshot_record(snapshots))
+        local_row = _exchange_thread_row(state_db, thread_id)
+        local_fingerprint = _fingerprint_id(
+            _thread_fingerprint(local_row, codex_home, thread_id)
+        )
+        title = (
+            _string((latest_remote or {}).get("title"))
+            or _string((incoming_snapshot or {}).get("title"))
+            or _string((local_row or {}).get("title"))
+            or thread_id
+        )
+        cwd = (
+            _string((latest_remote or {}).get("cwd"))
+            or _string((incoming_snapshot or {}).get("cwd"))
+            or _string((local_row or {}).get("cwd"))
+        )
+        conflicts.append(
+            {
+                "thread_id": thread_id,
+                "title": title,
+                "cwd": cwd,
+                "reason": _string(conflict.get("reason")) or "conflict",
+                "detected_at": conflict.get("detected_at"),
+                "source_device_id": source_device_id,
+                "source_device_name": _string(
+                    (latest_remote or incoming_snapshot or {}).get("source_device_name")
+                ),
+                "local_fingerprint": conflict.get("local_fingerprint"),
+                "current_local_fingerprint": local_fingerprint,
+                "incoming_fingerprint": conflict.get("incoming_fingerprint"),
+                "local": _local_thread_payload(local_row, local_fingerprint),
+                "incoming_snapshot": incoming_snapshot,
+                "latest_remote_snapshot": latest_remote,
+            }
+        )
+
+    return {
+        "device": identity.to_json() if identity else None,
+        "exchange_dir": str(exchange_dir),
+        "ledger_path": str(ledger_path),
+        "conflict_count": len(conflicts),
+        "conflicts": conflicts,
+    }
+
+
+def resolve_thread_snapshot_conflict(
+    thread_id: str,
+    *,
+    action: str,
+    codex_home: Path = CODEX_HOME_DIR,
+    exchange_dir: Path = DEFAULT_EXCHANGE_DIR,
+    device_identity_path: Path = DEFAULT_DEVICE_IDENTITY_PATH,
+    ledger_path: Path = DEFAULT_LEDGER_PATH,
+) -> dict[str, Any]:
+    if action not in {"accept_local", "accept_remote_latest"}:
+        raise ThreadConflictResolutionError("unsupported_resolution_action")
+
+    ledger = _read_exchange_ledger(ledger_path)
+    thread_ledger = ledger.get("threads", {}).get(thread_id)
+    if not isinstance(thread_ledger, dict) or not isinstance(
+        thread_ledger.get("conflict"), dict
+    ):
+        raise ThreadConflictResolutionError("conflict_not_found")
+
+    conflict = thread_ledger["conflict"]
+    source_device_id = _string(conflict.get("source_device_id"))
+    if not source_device_id:
+        raise ThreadConflictResolutionError("source_device_not_found")
+
+    state_db = codex_home / STATE_DB_NAME
+    local_row = _exchange_thread_row(state_db, thread_id)
+    local_fingerprint = _fingerprint_id(
+        _thread_fingerprint(local_row, codex_home, thread_id)
+    )
+    snapshots = _snapshot_records(
+        exchange_dir,
+        thread_id=thread_id,
+        source_device_id=source_device_id,
+    )
+    if not snapshots:
+        raise ThreadConflictResolutionError("source_snapshots_not_found")
+
+    if action == "accept_remote_latest":
+        latest = _latest_snapshot_record(snapshots)
+        if latest is None:
+            raise ThreadConflictResolutionError("source_snapshots_not_found")
+        validation_error = _validate_snapshot(latest["path"], latest["metadata"])
+        if validation_error:
+            raise ThreadConflictResolutionError(validation_error)
+        _import_snapshot_into_home(
+            snapshot_dir=latest["path"],
+            metadata=latest["metadata"],
+            codex_home=codex_home,
+            overwrite=local_row is not None,
+        )
+        resolved_fingerprint = _string(latest["metadata"].get("fingerprint"))
+        for snapshot in snapshots:
+            _record_device_snapshot(
+                thread_ledger,
+                device_id=source_device_id,
+                fingerprint_id=snapshot["metadata"]["fingerprint"],
+                snapshot_path=snapshot["path"],
+                status="imported",
+            )
+    else:
+        if not local_fingerprint:
+            raise ThreadConflictResolutionError("local_thread_not_found")
+        resolved_fingerprint = local_fingerprint
+        for snapshot in snapshots:
+            _record_device_snapshot(
+                thread_ledger,
+                device_id=source_device_id,
+                fingerprint_id=snapshot["metadata"]["fingerprint"],
+                snapshot_path=snapshot["path"],
+                status="ignored",
+            )
+
+    thread_ledger.pop("conflict", None)
+    thread_ledger["local_fingerprint"] = resolved_fingerprint
+    thread_ledger["resolved_conflict"] = {
+        "action": action,
+        "resolved_at": time.time(),
+        "source_device_id": source_device_id,
+        "fingerprint": resolved_fingerprint,
+    }
+    _write_exchange_ledger(ledger_path, ledger)
+    return {
+        "thread_id": thread_id,
+        "action": action,
+        "fingerprint": resolved_fingerprint,
+        "conflicts": thread_snapshot_conflicts_payload(
+            codex_home=codex_home,
+            exchange_dir=exchange_dir,
+            device_identity_path=device_identity_path,
+            ledger_path=ledger_path,
+        ),
+    }
+
+
 def _write_snapshot(
     *,
     exchange_dir: Path,
@@ -732,26 +881,20 @@ def _import_decision(
     parent_fingerprint: str | None,
     thread_ledger: dict[str, Any],
 ) -> str:
-    if local_fingerprint == incoming_fingerprint:
-        return "same_content"
-    if local_row is None:
-        return "import"
-    if parent_fingerprint and local_fingerprint == parent_fingerprint:
-        return "import"
-    if (
-        thread_ledger.get("local_fingerprint") == parent_fingerprint
-        and parent_fingerprint
-    ):
-        return "import"
-    return "conflict"
+    return import_snapshot_decision(
+        has_local=local_row is not None,
+        local_fingerprint=local_fingerprint,
+        incoming_fingerprint=incoming_fingerprint,
+        parent_fingerprint=parent_fingerprint,
+        entry_ledger=thread_ledger,
+    )
 
 
 def _parent_fingerprint_for_export(
     thread_ledger: dict[str, Any],
     fingerprint_id: str,
 ) -> str | None:
-    parent = _string(thread_ledger.get("local_fingerprint"))
-    return parent if parent and parent != fingerprint_id else None
+    return parent_fingerprint_for_export(thread_ledger, fingerprint_id)
 
 
 def _fingerprint_id(fingerprint: dict[str, Any] | None) -> str | None:
@@ -761,57 +904,30 @@ def _fingerprint_id(fingerprint: dict[str, Any] | None) -> str | None:
 
 
 def _read_exchange_ledger(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {"threads": {}}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        logger.warning("codex_thread_exchange event=ledger_malformed path=%s", path)
-        return {"threads": {}}
-    if not isinstance(raw, dict):
-        return {"threads": {}}
-    if not isinstance(raw.get("threads"), dict):
-        raw["threads"] = {}
-    return raw
+    return read_device_ledger(
+        path,
+        scope_key="threads",
+        logger=logger,
+        malformed_event="codex_thread_exchange event=ledger_malformed",
+    )
 
 
 def _write_exchange_ledger(path: Path, ledger: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _write_json_atomic(path, ledger)
+    write_json_atomic(path, ledger)
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent, delete=False
-    ) as tmp:
-        tmp.write(body)
-        tmp_name = tmp.name
-    os.replace(tmp_name, path)
+    write_json_atomic(path, payload)
 
 
 def _ledger_thread(ledger: dict[str, Any], thread_id: str) -> dict[str, Any]:
-    threads = ledger.setdefault("threads", {})
-    thread = threads.setdefault(thread_id, {})
-    thread.setdefault("devices", {})
-    return thread
+    return device_ledger_entry(ledger, scope_key="threads", entity_id=thread_id)
 
 
 def _device_exported_fingerprints(
     thread_ledger: dict[str, Any], device_id: str
 ) -> set[str]:
-    device = thread_ledger.get("devices", {}).get(device_id)
-    snapshots = device.get("snapshots") if isinstance(device, dict) else None
-    if not isinstance(snapshots, dict):
-        return set()
-    return {
-        fingerprint
-        for fingerprint, value in snapshots.items()
-        if isinstance(fingerprint, str)
-        and isinstance(value, dict)
-        and value.get("status") == "exported"
-    }
+    return device_exported_fingerprints(thread_ledger, device_id)
 
 
 def _snapshot_already_imported(
@@ -819,13 +935,11 @@ def _snapshot_already_imported(
     device_id: str,
     fingerprint_id: str,
 ) -> bool:
-    device = thread_ledger.get("devices", {}).get(device_id)
-    snapshots = device.get("snapshots") if isinstance(device, dict) else None
-    snapshot = snapshots.get(fingerprint_id) if isinstance(snapshots, dict) else None
-    return isinstance(snapshot, dict) and snapshot.get("status") in {
-        "imported",
-        "same_content",
-    }
+    return snapshot_already_imported(
+        thread_ledger,
+        device_id=device_id,
+        fingerprint_id=fingerprint_id,
+    )
 
 
 def _record_device_snapshot(
@@ -836,15 +950,13 @@ def _record_device_snapshot(
     snapshot_path: Path,
     status: str,
 ) -> None:
-    devices = thread_ledger.setdefault("devices", {})
-    device = devices.setdefault(device_id, {})
-    snapshots = device.setdefault("snapshots", {})
-    snapshots[fingerprint_id] = {
-        "fingerprint": fingerprint_id,
-        "snapshot_path": str(snapshot_path),
-        "status": status,
-        "seen_at": time.time(),
-    }
+    record_device_snapshot(
+        thread_ledger,
+        device_id=device_id,
+        fingerprint_id=fingerprint_id,
+        snapshot_path=snapshot_path,
+        status=status,
+    )
 
 
 def _record_conflict(
@@ -855,10 +967,111 @@ def _record_conflict(
     source_device_id: str,
     reason: str,
 ) -> None:
-    thread_ledger["conflict"] = {
-        "reason": reason,
-        "local_fingerprint": local_fingerprint,
-        "incoming_fingerprint": incoming_fingerprint,
-        "source_device_id": source_device_id,
-        "detected_at": time.time(),
+    record_device_conflict(
+        thread_ledger,
+        local_fingerprint=local_fingerprint,
+        incoming_fingerprint=incoming_fingerprint,
+        source_device_id=source_device_id,
+        reason=reason,
+    )
+
+
+def _snapshot_records(
+    exchange_dir: Path,
+    *,
+    thread_id: str,
+    source_device_id: str | None = None,
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for snapshot_dir in _snapshot_dirs(exchange_dir):
+        metadata_path = snapshot_dir / "metadata.json"
+        try:
+            metadata = _read_snapshot_metadata(metadata_path)
+        except ThreadTransferError:
+            continue
+        if metadata["thread_id"] != thread_id:
+            continue
+        if source_device_id and metadata["source_device_id"] != source_device_id:
+            continue
+        records.append({"path": snapshot_dir, "metadata": metadata})
+    return records
+
+
+def _find_snapshot_record(
+    records: list[dict[str, Any]],
+    fingerprint_id: str | None,
+) -> dict[str, Any] | None:
+    if not fingerprint_id:
+        return None
+    return next(
+        (
+            record
+            for record in records
+            if record["metadata"].get("fingerprint") == fingerprint_id
+        ),
+        None,
+    )
+
+
+def _latest_snapshot_record(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not records:
+        return None
+    return max(records, key=_snapshot_record_sort_key)
+
+
+def _snapshot_record_sort_key(record: dict[str, Any]) -> tuple[float, float, str]:
+    metadata = record["metadata"]
+    row = metadata.get("thread_row")
+    row = row if isinstance(row, dict) else {}
+    updated_at_ms = row.get("updated_at_ms")
+    if isinstance(updated_at_ms, int | float):
+        updated_value = float(updated_at_ms)
+    else:
+        updated_at = row.get("updated_at")
+        updated_value = (
+            float(updated_at) * 1000 if isinstance(updated_at, int | float) else 0
+        )
+    exported_at = metadata.get("exported_at")
+    exported_value = float(exported_at) if isinstance(exported_at, int | float) else 0
+    return (
+        updated_value,
+        exported_value,
+        _string(metadata.get("fingerprint")) or "",
+    )
+
+
+def _snapshot_payload(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    metadata = record["metadata"]
+    row = metadata.get("thread_row")
+    row = row if isinstance(row, dict) else {}
+    return {
+        "fingerprint": metadata.get("fingerprint"),
+        "parent_fingerprint": metadata.get("parent_fingerprint"),
+        "source_device_id": metadata.get("source_device_id"),
+        "source_device_name": metadata.get("source_device_name"),
+        "snapshot_path": str(record["path"]),
+        "rollout_size": metadata.get("rollout_size"),
+        "exported_at": metadata.get("exported_at"),
+        "updated_at_ms": row.get("updated_at_ms"),
+        "title": _string(row.get("title")) or metadata.get("thread_id"),
+        "cwd": _string(row.get("cwd")),
+        "tokens_used": row.get("tokens_used"),
+    }
+
+
+def _local_thread_payload(
+    row: dict[str, Any] | None,
+    fingerprint: str | None,
+) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "fingerprint": fingerprint,
+        "updated_at_ms": row.get("updated_at_ms"),
+        "title": _string(row.get("title")) or _string(row.get("id")),
+        "cwd": _string(row.get("cwd")),
+        "tokens_used": row.get("tokens_used"),
+        "rollout_path": _string(row.get("rollout_path")),
     }

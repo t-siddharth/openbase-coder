@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from shutil import which
+
+from openbase_coder_cli.paths import PLUGIN_CONSOLE_ASSETS_DIR
 
 from .models import PluginRegistry
 from .store import save_console_registry
@@ -27,6 +30,8 @@ def _write_generated_registry(console_src_dir: Path, registry: PluginRegistry) -
     page_index = 0
     for plugin in sorted(registry.plugins, key=lambda item: item.plugin_id):
         for page in plugin.capabilities.console_pages:
+            if page.render != "component":
+                continue
             var_name = f"PluginPage_{page_index}"
             page_index += 1
             imports.append(_import_statement(var_name, page.import_module, page.export))
@@ -110,7 +115,10 @@ def _install_console_packages(console_dir: Path, registry: PluginRegistry) -> No
 
     packages: list[str] = []
     for plugin in registry.plugins:
-        packages.extend(plugin.capabilities.console_npm_packages)
+        if any(
+            page.render == "component" for page in plugin.capabilities.console_pages
+        ):
+            packages.extend(plugin.capabilities.console_npm_packages)
 
     unique_packages = sorted(set(item for item in packages if item))
     if not unique_packages:
@@ -126,11 +134,15 @@ def _install_console_packages(console_dir: Path, registry: PluginRegistry) -> No
 def sync_console_integration(
     registry: PluginRegistry, workspace_path: str | None
 ) -> None:
+    _sync_iframe_assets(registry)
     payload = {
         "pages": [
             {
                 "plugin_id": plugin.plugin_id,
-                "pages": [page.__dict__ for page in plugin.capabilities.console_pages],
+                "pages": [
+                    _console_page_payload(plugin.plugin_id, page)
+                    for page in plugin.capabilities.console_pages
+                ],
             }
             for plugin in registry.plugins
         ],
@@ -153,3 +165,40 @@ def sync_console_integration(
 
     _install_console_packages(console_dir, registry)
     _write_generated_registry(console_dir / "src", registry)
+
+
+def _console_page_payload(plugin_id: str, page) -> dict:
+    payload = page.__dict__.copy()
+    if page.render == "iframe":
+        payload["iframe_url"] = (
+            f"/openbase-plugin-assets/{plugin_id}/{page.key}/{page.entrypoint}"
+        )
+    return payload
+
+
+def _sync_iframe_assets(registry: PluginRegistry) -> None:
+    PLUGIN_CONSOLE_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    active_targets: set[Path] = set()
+
+    for plugin in registry.plugins:
+        source_root = Path(plugin.source_path)
+        for page in plugin.capabilities.console_pages:
+            if page.render != "iframe":
+                continue
+            source = (source_root / page.asset_dir).resolve()
+            if not source.is_dir():
+                raise FileNotFoundError(
+                    f"Console page asset_dir not found for {plugin.plugin_id}/{page.key}: {source}"
+                )
+            target = PLUGIN_CONSOLE_ASSETS_DIR / plugin.plugin_id / page.key
+            active_targets.add(target.resolve())
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(source, target)
+
+    for plugin_dir in PLUGIN_CONSOLE_ASSETS_DIR.iterdir():
+        if not plugin_dir.is_dir():
+            continue
+        for page_dir in plugin_dir.iterdir():
+            if page_dir.is_dir() and page_dir.resolve() not in active_targets:
+                shutil.rmtree(page_dir)

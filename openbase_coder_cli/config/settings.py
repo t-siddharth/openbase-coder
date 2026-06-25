@@ -65,13 +65,21 @@ _console_build_dir_env = os.environ.get("OPENBASE_CODER_CLI_CONSOLE_BUILD_DIR")
 if _console_build_dir_env:
     CONSOLE_BUILD_DIR: Path | None = Path(_console_build_dir_env)
 else:
+    from openbase_coder_cli.runtime import packaged_console_build_dir
     from openbase_coder_cli.services.installation import InstallationConfig
 
     if InstallationConfig.exists():
         _install_config = InstallationConfig.load()
-        CONSOLE_BUILD_DIR = Path(_install_config.workspace_path) / "console" / "dist"
+        if _install_config.console_build_dir:
+            CONSOLE_BUILD_DIR = Path(_install_config.console_build_dir)
+        elif _install_config.workspace_path:
+            CONSOLE_BUILD_DIR = (
+                Path(_install_config.workspace_path) / "console" / "dist"
+            )
+        else:
+            CONSOLE_BUILD_DIR = packaged_console_build_dir()
     else:
-        CONSOLE_BUILD_DIR = None
+        CONSOLE_BUILD_DIR = packaged_console_build_dir()
 
 
 # Application definition

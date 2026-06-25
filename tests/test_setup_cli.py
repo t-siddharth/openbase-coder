@@ -4,7 +4,9 @@ import importlib
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from click.testing import CliRunner
 
 from openbase_coder_cli import claude_auth
@@ -630,6 +632,29 @@ def test_ensure_codex_home_config_falls_back_to_resolved_uv(
     )
 
 
+def test_super_agents_mcp_command_prefers_packaged_python_bin(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    package = tmp_path / "package"
+    python_path = package / "python" / "bin" / "python"
+    command = python_path.parent / "super-agents-mcp"
+    command.parent.mkdir(parents=True)
+    command.write_text("#!/bin/sh\n", encoding="utf-8")
+    python_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        setup_cli,
+        "current_runtime_package",
+        lambda: SimpleNamespace(python_path=python_path),
+    )
+    monkeypatch.setattr(setup_cli, "which", lambda _command: None)
+
+    command_path, args = setup_cli._super_agents_mcp_command(workspace)
+
+    assert command_path == command
+    assert args == []
+
+
 def test_ensure_claude_config_installs_super_agents_mcp(tmp_path, monkeypatch) -> None:
     workspace = tmp_path / "workspace"
     command = workspace / ".venv" / "bin" / "super-agents-mcp"
@@ -1093,6 +1118,54 @@ def test_setup_configures_tailscale_serve(tmp_path, monkeypatch) -> None:
 
     assert result.exit_code == 0, result.output
     assert calls == ["thread-sync", "sounds", "configure"]
+
+
+def test_ensure_local_audio_dependencies_installs_into_runtime_python(
+    tmp_path, monkeypatch
+) -> None:
+    python_path = tmp_path / "python"
+    python_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    runtime_package = type("RuntimePackage", (), {"python_path": python_path})()
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+        if command[1:] == [
+            "-c",
+            "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+        ]:
+            return subprocess.CompletedProcess(command, 0, stdout="3.12\n")
+        if command[1:] == ["-c", "import huggingface_hub, kokoro, mlx_whisper"]:
+            return subprocess.CompletedProcess(command, 1)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(setup_cli.subprocess, "run", fake_run)
+
+    setup_cli._ensure_local_audio_dependencies(runtime_package)
+
+    assert [command for command, _kwargs in commands][-1] == [
+        str(python_path),
+        "-m",
+        "pip",
+        "install",
+        "--upgrade",
+        *setup_cli.LOCAL_AUDIO_REQUIREMENTS,
+    ]
+
+
+def test_ensure_local_audio_dependencies_rejects_python_313(
+    tmp_path, monkeypatch
+) -> None:
+    python_path = tmp_path / "python"
+    runtime_package = type("RuntimePackage", (), {"python_path": python_path})()
+
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout="3.13\n")
+
+    monkeypatch.setattr(setup_cli.subprocess, "run", fake_run)
+
+    with pytest.raises(Exception, match="requires a Python 3.12"):
+        setup_cli._ensure_local_audio_dependencies(runtime_package)
 
 
 def test_workspace_skill_sources_supports_direct_skill_dirs(tmp_path) -> None:

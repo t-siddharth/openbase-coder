@@ -17,8 +17,8 @@ runtime.
   project metadata, and service status
 - Local per-machine thread favorite metadata exposed on thread list/detail APIs
 - Voice-agent runtime built around LiveKit and Codex app-server sessions
-- One-command macOS/Linux setup for the Openbase workspace, environment file,
-  console build, background services, and default agent instructions
+- One-command macOS setup for environment file, bundled runtime assets,
+  background services, and default agent instructions
 - Plugin installation and bootstrap commands for extending the local runtime
 - Openbase Cloud login support for authenticated client workflows
 - A local web console served by the CLI
@@ -26,36 +26,31 @@ runtime.
 ## Requirements
 
 - macOS (launchd) or Linux (systemd user services) for setup and service
-  management. The `computer-use` CLI is Linux-only for Openbase DevSpace
-  Xorg/DCV desktops; macOS agents should use native Computer Use tools.
-- Python 3.13+
-- Git
-- `uv` for the recommended install/setup flow and local development
-- Node package tooling for the bundled console build
-- `livekit-server` on `PATH` for voice services
+  management. The standalone installer currently targets macOS first.
+- Tailscale for iOS access to the local CLI.
+- Codex and Openbase authentication for authenticated coding workflows.
+- Git only for installing plugins from GitHub URLs or for development checkout mode.
 
 ## Quick Start
 
-Recommended one-line setup with `uvx`:
+Recommended standalone setup on macOS:
 
 ```bash
-uvx --python 3.13 openbase-coder setup
-```
-
-This runs the latest published `openbase-coder` package in an isolated `uv`
-tool environment and starts the normal first-time setup flow.
-
-For a persistent command on your `PATH` after setup, install with `uv tool`:
-
-```bash
-uv tool install --python 3.13 openbase-coder
+curl -fsSL https://github.com/openbase-community/openbase-coder/releases/latest/download/install.sh | sh
 openbase-coder setup
 ```
 
-`pipx` is also supported when you already manage Python tools that way:
+The standalone installer bundles Python, Openbase Coder dependencies, the web
+console, and LiveKit server.
+
+Local Kokoro/MLX audio is installed on demand when setup is run with
+`--audio-provider local`. Release packages should be built with Python 3.12 so
+that Kokoro's current Python `<3.13` package metadata is satisfied.
+
+For source-based development, use the legacy `uv` flow:
 
 ```bash
-pipx install --python python3.13 openbase-coder
+uvx --python 3.13 openbase-coder setup --dev-workspace
 ```
 
 Verify a persistent install:
@@ -72,16 +67,22 @@ If you already installed the persistent `openbase-coder` command, run:
 openbase-coder setup
 ```
 
-Setup clones the public Openbase Coder workspace into `~/.openbase/workspace`,
-syncs the runtime install set, generates `~/.openbase/.env` if needed, builds
-the web console, installs launchd services, and prepares the local Codex home
-used by voice sessions.
+For fully local speech-to-text and text-to-speech:
+
+```bash
+openbase-coder setup --audio-provider local
+```
+
+Setup uses the bundled runtime package, generates `~/.openbase/.env` if needed,
+installs launchd services, and prepares the local Codex home used by voice
+sessions. Source development mode can still clone and sync the public workspace
+with `--dev-workspace`.
 
 After setup, check the local runtime:
 
 ```bash
-uvx --python 3.13 openbase-coder doctor
-uvx --python 3.13 openbase-coder services status
+openbase-coder doctor
+openbase-coder services status
 ```
 
 ## Run The Server
@@ -89,29 +90,30 @@ uvx --python 3.13 openbase-coder services status
 For foreground development:
 
 ```bash
-uvx --python 3.13 openbase-coder server --host 0.0.0.0 --port 7999
+openbase-coder server --host 0.0.0.0 --port 7999
 ```
 
 For normal macOS background operation:
 
 ```bash
-uvx --python 3.13 openbase-coder services start
-uvx --python 3.13 openbase-coder services status
+openbase-coder services start
+openbase-coder services status
 ```
 
 ## Common Commands
 
 ```bash
-uvx --python 3.13 openbase-coder setup
-uvx --python 3.13 openbase-coder doctor
-uvx --python 3.13 openbase-coder login
-uvx --python 3.13 openbase-coder services status
-uvx --python 3.13 openbase-coder services logs django-cli
-uvx --python 3.13 openbase-coder plugins list
-uvx --python 3.13 openbase-coder bootstrap --help
+openbase-coder setup
+openbase-coder doctor
+openbase-coder login
+openbase-coder services status
+openbase-coder services logs django-cli
+openbase-coder plugins list
+openbase-coder bootstrap --help
 ```
 
-If you installed with `uv tool`, omit `uvx --python 3.13` from those commands.
+For source development without a persistent install, prefix commands with
+`uvx --python 3.13`.
 
 ## Documentation
 

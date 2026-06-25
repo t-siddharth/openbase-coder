@@ -4,7 +4,7 @@ description = "OpenBase Coder CLI with embedded server"
 authors = [{ name = "Gabe Montague", email = "gabe@openbase.com" }]
 license = "AGPL-3.0-only"
 readme = "README.md"
-requires-python = ">=3.13,<3.14"
+requires-python = ">=3.12,<3.14"
 dynamic = ["version"]
 dependencies = [
     "click>=8.2.0",
@@ -45,12 +45,9 @@ dependencies = [
     "livekit-plugins-deepgram==1.5.4",
     "livekit-plugins-noise-cancellation>=0.2.5",
     "aiohttp>=3.13.3",
-    "multi-workspace>=3.2.2",
+    "multi-workspace>=3.2.3",
     "super-agents[claude]>=0.1.4",
     "websockets>=16.0",
-    "kokoro>=0.9.4",
-    "huggingface-hub>=0.36.0",
-    "mlx-whisper>=0.4.3",
     "numpy>=2.3.0",
 ]
 
@@ -69,6 +66,11 @@ dev = [
     "pytest-cov>=6.1.1",
     "pytest-mock>=3.14.0",
     "pyinstaller>=6.9.0",
+]
+local-audio = [
+    "huggingface-hub>=0.36.0",
+    "kokoro>=0.9.4",
+    "mlx-whisper>=0.4.3",
 ]
 
 [build-system]

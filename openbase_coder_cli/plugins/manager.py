@@ -48,6 +48,10 @@ def _restart_services_if_installed() -> None:
     )
 
 
+def _standalone_mode() -> bool:
+    return InstallationConfig.exists() and InstallationConfig.load().standalone
+
+
 def _workspace_path_or_none() -> str | None:
     if not InstallationConfig.exists():
         return None
@@ -178,6 +182,20 @@ def add_plugin(source: str, ref: str | None) -> PluginRecord:
         joined = "\n".join(f"- {item}" for item in collisions)
         raise click.ClickException(f"Plugin install blocked by collisions:\n{joined}")
 
+    if _standalone_mode():
+        component_pages = [
+            page.key
+            for page in record.capabilities.console_pages
+            if page.render == "component"
+        ]
+        if component_pages:
+            uninstall_package(record.package_name)
+            joined = ", ".join(component_pages)
+            raise click.ClickException(
+                "Standalone installs support iframe console pages only. "
+                f"Plugin '{record.plugin_id}' declares legacy component pages: {joined}"
+            )
+
     registry.plugins.append(record)
     save_registry(registry)
     write_requirements_file(registry)
@@ -242,6 +260,20 @@ def update_plugin(plugin_id: str | None, ref: str | None) -> list[PluginRecord]:
             raise click.ClickException(
                 f"Plugin update blocked by collisions:\n{joined}"
             )
+
+        if _standalone_mode():
+            component_pages = [
+                page.key
+                for page in record.capabilities.console_pages
+                if page.render == "component"
+            ]
+            if component_pages:
+                uninstall_package(record.package_name)
+                joined = ", ".join(component_pages)
+                raise click.ClickException(
+                    "Standalone installs support iframe console pages only. "
+                    f"Plugin '{record.plugin_id}' declares legacy component pages: {joined}"
+                )
 
         if current.package_name != record.package_name:
             uninstall_package(current.package_name)

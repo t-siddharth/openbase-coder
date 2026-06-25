@@ -49,6 +49,10 @@ Mutating plugin commands will:
 3. Regenerate console plugin integration artifacts
 4. Restart managed launchd services
 
+Standalone installs support plugin console pages as iframe-backed static assets.
+React component console pages still work in dev-workspace mode, where the
+workspace console can install plugin npm packages and rebuild from source.
+
 ## Plugin Declaration Model
 
 Plugins are Python packages discovered via entry points in:
@@ -67,6 +71,31 @@ The entry point returns a plugin spec dict containing declarations such as:
 - `skills`
 - `django_url_modules`
 - `console_npm_packages`
+
+### Console pages
+
+For install-anywhere plugins, declare iframe console pages with static assets:
+
+```python
+{
+    "console_pages": [
+        {
+            "key": "dashboard",
+            "title": "Dashboard",
+            "asset_dir": "web",
+            "entrypoint": "index.html",
+        }
+    ]
+}
+```
+
+The CLI copies `asset_dir` into `~/.openbase/plugins/console-assets/` and serves
+it under `/openbase-plugin-assets/<plugin>/<page>/`. The console adds the page to
+the sidebar from the runtime plugin registry without rebuilding.
+
+Development-mode React component pages can still use `import_module`, `export`,
+and `console_npm_packages`, but those pages require a workspace console rebuild
+and are rejected by standalone installs.
 
 ## Collision Rules
 

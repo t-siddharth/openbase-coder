@@ -4,6 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from openbase_coder_cli.paths import CODEX_HOME_DIR
+from openbase_coder_cli.runtime import packaged_instructions_dir
 from openbase_coder_cli.services.installation import InstallationConfig
 
 CODEX_HOME_DEFAULT_SOURCE_DIR = "instructions"
@@ -15,8 +16,11 @@ def refresh_openbase_agents_md_from_installation() -> bool:
     try:
         if not InstallationConfig.exists():
             return False
-        workspace_dir = Path(InstallationConfig.load().workspace_path)
-        return ensure_openbase_agents_md(workspace_dir)
+        config = InstallationConfig.load()
+        source_root = _instruction_source_root(config.workspace_path)
+        if source_root is None:
+            return False
+        return ensure_openbase_agents_md(source_root.parent)
     except Exception:
         return False
 
@@ -44,7 +48,7 @@ def ensure_openbase_instruction_md(
     report: Callable[[str], None] | None = None,
 ) -> bool:
     """Maintain an editable agent instruction file with an Openbase section."""
-    source_path = Path(workspace_dir) / CODEX_HOME_DEFAULT_SOURCE_DIR / "AGENTS.md"
+    source_path = _agents_source_path(workspace_dir)
     if not source_path.is_file():
         _report(report, f"{document_label} source not found at {source_path}")
         return False
@@ -68,8 +72,7 @@ def ensure_openbase_instruction_md(
     if target_path.exists() and not target_path.is_file():
         _report(
             report,
-            f"{document_label} already exists at {target_path}; "
-            "leaving it unchanged.",
+            f"{document_label} already exists at {target_path}; leaving it unchanged.",
         )
         return False
 
@@ -88,6 +91,21 @@ def _managed_agents_md_section(source_text: str, source_path: Path) -> str:
     if body:
         return f"{MANAGED_AGENTS_HEADING}\n\n{note}\n\n{body}\n"
     return f"{MANAGED_AGENTS_HEADING}\n\n{note}\n"
+
+
+def _agents_source_path(workspace_dir: str | Path) -> Path:
+    workspace_path = Path(workspace_dir)
+    if workspace_path.name == CODEX_HOME_DEFAULT_SOURCE_DIR:
+        return workspace_path / "AGENTS.md"
+    return workspace_path / CODEX_HOME_DEFAULT_SOURCE_DIR / "AGENTS.md"
+
+
+def _instruction_source_root(workspace_dir: str | Path | None) -> Path | None:
+    if workspace_dir:
+        workspace_source = Path(workspace_dir) / CODEX_HOME_DEFAULT_SOURCE_DIR
+        if workspace_source.is_dir():
+            return workspace_source
+    return packaged_instructions_dir()
 
 
 def _without_h2_headings(text: str) -> str:

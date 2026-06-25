@@ -81,9 +81,9 @@ SERVICES: list[ServiceDefinition] = [
             "    lan)\n"
             '        if [ -z "${{LIVEKIT_INTERFACE:-}}" ]; then\n'
             '            if [ "$(uname)" = "Darwin" ]; then\n'
-            '                LIVEKIT_INTERFACE="$(route -n get default 2>/dev/null | sed -n \'s/.*interface: //p\' | head -n 1)"\n'
+            "                LIVEKIT_INTERFACE=\"$(route -n get default 2>/dev/null | sed -n 's/.*interface: //p' | head -n 1)\"\n"
             "            else\n"
-            '                LIVEKIT_INTERFACE="$(ip -4 route show default 2>/dev/null | sed -n \'s/.* dev \\([^ ]*\\).*/\\1/p\' | head -n 1)"\n'
+            "                LIVEKIT_INTERFACE=\"$(ip -4 route show default 2>/dev/null | sed -n 's/.* dev \\([^ ]*\\).*/\\1/p' | head -n 1)\"\n"
             "            fi\n"
             "        fi\n"
             '        if [ -z "${{LIVEKIT_NODE_IP:-}}" ]; then\n'
@@ -154,6 +154,28 @@ SERVICES: list[ServiceDefinition] = [
         workdir_template="{data_dir}",
     ),
     ServiceDefinition(
+        name="claude-thread-sync",
+        description="Claude Code Thread Sync",
+        command_template=(
+            'CLAUDE_THREAD_SYNC_INTERVAL="${{CLAUDE_THREAD_SYNC_INTERVAL:-60}}"\n'
+            'CLAUDE_THREAD_SYNC_MAX_AGE_DAYS="${{CLAUDE_THREAD_SYNC_MAX_AGE_DAYS:-15}}"\n'
+            'exec {openbase_coder} claude-sync run --interval "$CLAUDE_THREAD_SYNC_INTERVAL" --max-age-days "$CLAUDE_THREAD_SYNC_MAX_AGE_DAYS"'
+        ),
+        workdir_template="{data_dir}",
+    ),
+    ServiceDefinition(
+        name="claude-thread-device-sync",
+        description="Claude Code Thread Device Sync",
+        command_template=(
+            'CLAUDE_THREAD_DEVICE_SYNC_INTERVAL="${{CLAUDE_THREAD_DEVICE_SYNC_INTERVAL:-60}}"\n'
+            'CLAUDE_THREAD_DEVICE_SYNC_MAX_AGE_DAYS="${{CLAUDE_THREAD_DEVICE_SYNC_MAX_AGE_DAYS:-15}}"\n'
+            'CLAUDE_THREAD_DEVICE_SYNC_EXCHANGE_DIR="${{CLAUDE_THREAD_DEVICE_SYNC_EXCHANGE_DIR:-{data_dir}/claude-thread-sync}}"\n'
+            'exec {openbase_coder} claude-sync devices run --interval "$CLAUDE_THREAD_DEVICE_SYNC_INTERVAL" --max-age-days "$CLAUDE_THREAD_DEVICE_SYNC_MAX_AGE_DAYS" --exchange-dir "$CLAUDE_THREAD_DEVICE_SYNC_EXCHANGE_DIR"'
+        ),
+        workdir_template="{data_dir}",
+        install_by_default=False,
+    ),
+    ServiceDefinition(
         name="codex-thread-device-sync",
         description="Codex Thread Device Sync",
         command_template=(
@@ -191,9 +213,9 @@ SERVICES: list[ServiceDefinition] = [
             "    exit 1\n"
             "fi\n"
             'export LIVEKIT_AGENT_LOAD_THRESHOLD="${{LIVEKIT_AGENT_LOAD_THRESHOLD:-2.0}}"\n'
-            "exec {uv} run python -m openbase_coder_cli.livekit_agent.livekit start"
+            "exec {python} -m openbase_coder_cli.livekit_agent.livekit start"
         ),
-        workdir_template="{workspace}/cli",
+        workdir_template="{runtime_workdir}",
         cleanup_ports=(8081,),
         cleanup_command_substrings=("openbase_coder_cli.livekit_agent.livekit",),
     ),

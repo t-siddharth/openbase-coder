@@ -4,15 +4,40 @@ Doctor command — verify service health and security configuration.
 
 from __future__ import annotations
 
+import json
 import subprocess
+from pathlib import Path
 
 import click
 
-from openbase_coder_cli.paths import DEFAULT_ENV_FILE_PATH
+from openbase_coder_cli.backend_config import (
+    CLAUDE_CODE_BACKEND,
+    CODEX_BACKEND,
+    CODING_BACKEND_ENV_KEY,
+    DEFAULT_CODING_BACKEND,
+    LEGACY_CODEX_BACKEND_ENV_KEY,
+    OPENBASE_CLOUD_BACKEND,
+    normalize_backend,
+)
+from openbase_coder_cli.claude_auth import claude_auth_status
+from openbase_coder_cli.dispatcher_config import (
+    selected_stt_provider_id,
+    selected_tts_provider_id,
+)
+from openbase_coder_cli.paths import (
+    AUTH_JSON_PATH,
+    CODEX_HOME_DIR,
+    DEFAULT_ENV_FILE_PATH,
+)
 from openbase_coder_cli.services.definitions import SERVICES
 from openbase_coder_cli.services.installation import InstallationConfig
 from openbase_coder_cli.services.launchd import launchctl_status
 from openbase_coder_cli.services.tailscale_serve import tailscale_serve_health
+from openbase_coder_cli.stt_providers import (
+    LOCAL_MLX_WHISPER_STT_PROVIDER_ID,
+    local_mlx_whisper_readiness,
+)
+from openbase_coder_cli.tts_providers import KOKORO_PROVIDER_ID, get_tts_provider
 
 # Services that have authentication and may safely bind to 0.0.0.0
 _AUTHENTICATED_PORTS: dict[int, str] = {
@@ -134,12 +159,158 @@ def _check_livekit_client_credentials(env: dict[str, str], warn, ok) -> None:
     ok("LiveKit client token credentials: set and separate from server credentials")
 
 
+def _selected_backend(env: dict[str, str]) -> str:
+    raw_value = (
+        env.get(CODING_BACKEND_ENV_KEY)
+        or env.get(LEGACY_CODEX_BACKEND_ENV_KEY)
+        or DEFAULT_CODING_BACKEND
+    )
+    try:
+        return normalize_backend(raw_value)
+    except ValueError:
+        return DEFAULT_CODING_BACKEND
+
+
+def _check_installation_config(ok, warn, fail) -> None:
+    if not InstallationConfig.exists():
+        fail("installation.json missing — run 'openbase-coder setup'")
+        return
+
+    ok("installation.json found")
+    try:
+        config = InstallationConfig.load()
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        fail(f"installation.json could not be read: {exc}")
+        return
+
+    if config.standalone:
+        ok("standalone runtime mode enabled")
+        _check_path(config.package_path, "standalone package", ok, fail, directory=True)
+        _check_path(config.python_path, "bundled Python", ok, fail)
+        _check_path(config.livekit_server_path, "bundled LiveKit server", ok, fail)
+        _check_path(
+            config.console_build_dir,
+            "bundled console build",
+            ok,
+            fail,
+            directory=True,
+            child="index.html",
+        )
+        if config.workspace_path:
+            warn(
+                "dev workspace is still configured in standalone mode; "
+                "rerun setup without --dev-workspace for no runtime clone"
+            )
+        else:
+            ok("no workspace clone required at runtime")
+        return
+
+    if config.workspace_path:
+        ok("development workspace runtime mode enabled")
+    else:
+        warn("non-standalone install has no workspace_path configured")
+
+
+def _check_path(
+    value: str,
+    label: str,
+    ok,
+    fail,
+    *,
+    directory: bool = False,
+    child: str | None = None,
+) -> None:
+    if not value:
+        fail(f"{label}: not configured")
+        return
+
+    path = Path(value).expanduser()
+    exists = path.is_dir() if directory else path.is_file()
+    if child and exists:
+        exists = (path / child).is_file()
+    if exists:
+        ok(f"{label}: {path}")
+    else:
+        fail(f"{label}: missing at {path}")
+
+
+def _check_agent_auth(env: dict[str, str], ok, warn, fail, action=None) -> None:
+    action = action or fail
+    backend = _selected_backend(env)
+    ok(f"coding backend selected: {backend}")
+
+    codex_auth = Path.home() / ".codex" / "auth.json"
+    service_codex_auth = CODEX_HOME_DIR / "auth.json"
+    if backend == CODEX_BACKEND:
+        if codex_auth.is_file():
+            ok("Codex auth: logged in")
+        else:
+            action("Codex auth missing: run 'codex login'")
+
+        if service_codex_auth.exists():
+            ok("Openbase Codex service auth bridge: configured")
+        else:
+            warn(
+                "Openbase Codex service auth bridge missing: "
+                "run 'openbase-coder setup' after 'codex login'"
+            )
+
+    if backend == OPENBASE_CLOUD_BACKEND:
+        if AUTH_JSON_PATH.is_file():
+            ok("Openbase Cloud auth: logged in")
+        else:
+            action("Openbase Cloud auth missing: run 'openbase-coder login'")
+
+    if backend == CLAUDE_CODE_BACKEND:
+        status = claude_auth_status()
+        if status.logged_in:
+            ok("Claude Code auth: logged in")
+        else:
+            detail = f" ({status.raw_output})" if status.raw_output else ""
+            action(f"Claude Code auth missing: run 'claude auth login'{detail}")
+
+
+def _check_audio_readiness(ok, warn) -> None:
+    tts_provider = selected_tts_provider_id()
+    stt_provider = selected_stt_provider_id()
+    ok(f"TTS provider selected: {tts_provider}")
+    ok(f"STT provider selected: {stt_provider}")
+
+    if tts_provider == KOKORO_PROVIDER_ID:
+        status = get_tts_provider(KOKORO_PROVIDER_ID).readiness()
+        if status.ready:
+            ok(
+                "Kokoro local audio: ready "
+                f"({status.cached_files}/{status.required_files} files cached)"
+            )
+        else:
+            detail = f": {status.detail}" if status.detail else ""
+            warn(
+                "Kokoro local audio not ready "
+                f"({status.cached_files}/{status.required_files} files cached)"
+                f"{detail}; run 'openbase-coder setup --audio-provider local'"
+            )
+
+    if stt_provider == LOCAL_MLX_WHISPER_STT_PROVIDER_ID:
+        status = local_mlx_whisper_readiness()
+        if status.ready:
+            ok(f"Local MLX Whisper: ready ({status.model})")
+        else:
+            detail = f": {status.detail}" if status.detail else ""
+            warn(
+                "Local MLX Whisper not ready "
+                f"({status.model}){detail}; "
+                "run 'openbase-coder setup --audio-provider local'"
+            )
+
+
 @click.command()
 def doctor() -> None:
     """Check service health and security configuration."""
     ok_count = 0
     warn_count = 0
     fail_count = 0
+    action_count = 0
 
     def ok(msg: str) -> None:
         nonlocal ok_count
@@ -156,13 +327,15 @@ def doctor() -> None:
         fail_count += 1
         click.echo(click.style("  FAIL ", fg="red") + msg)
 
+    def action(msg: str) -> None:
+        nonlocal action_count
+        action_count += 1
+        click.echo(click.style("  SETUP", fg="cyan") + " " + msg)
+
     # --- Installation ---
     click.echo()
     click.echo(click.style("Installation", bold=True))
-    if InstallationConfig.exists():
-        ok("installation.json found")
-    else:
-        fail("installation.json missing — run 'openbase-coder setup'")
+    _check_installation_config(ok, warn, fail)
 
     # --- Service health ---
     click.echo()
@@ -205,16 +378,16 @@ def doctor() -> None:
     click.echo(click.style("Tailscale Serve", bold=True))
     serve_health = tailscale_serve_health()
     if not serve_health.tailscale_available:
-        fail("tailscale: not found on PATH")
+        action("tailscale: not found on PATH")
     elif not serve_health.tailscale_running:
-        fail(f"tailscale: not running ({serve_health.error or 'unknown error'})")
+        action(f"tailscale: not running ({serve_health.error or 'unknown error'})")
     else:
         ok(f"tailscale: running for {serve_health.host or 'unknown host'}")
 
     if serve_health.openbase_configured:
         ok("Openbase API Serve route: :18080 -> http://127.0.0.1:7999")
     else:
-        fail(
+        action(
             "Openbase API Serve route missing: run "
             "tailscale serve --bg --http=18080 http://127.0.0.1:7999"
         )
@@ -222,7 +395,7 @@ def doctor() -> None:
     if serve_health.livekit_configured:
         ok("LiveKit Serve route: :7880 -> tcp://127.0.0.1:7880")
     else:
-        fail(
+        action(
             "LiveKit Serve route missing: run "
             "tailscale serve --bg --tcp=7880 tcp://127.0.0.1:7880"
         )
@@ -231,7 +404,7 @@ def doctor() -> None:
         ok(f"external Openbase health check passed at {serve_health.openbase_url}")
     else:
         detail = f": {serve_health.error}" if serve_health.error else ""
-        fail(f"external Openbase health check failed{detail}")
+        action(f"external Openbase health check failed{detail}")
 
     # --- Credentials ---
     click.echo()
@@ -254,18 +427,30 @@ def doctor() -> None:
 
     _check_livekit_client_credentials(env, warn, ok)
 
+    # --- Agent auth ---
+    click.echo()
+    click.echo(click.style("Agent Auth", bold=True))
+    _check_agent_auth(env, ok, warn, fail, action)
+
+    # --- Audio ---
+    click.echo()
+    click.echo(click.style("Audio", bold=True))
+    _check_audio_readiness(ok, warn)
+
     # --- Summary ---
     click.echo()
-    total = ok_count + warn_count + fail_count
+    total = ok_count + warn_count + fail_count + action_count
     summary = f"{ok_count}/{total} checks passed"
     if fail_count:
         summary += f", {fail_count} failed"
     if warn_count:
         summary += f", {warn_count} warnings"
+    if action_count:
+        summary += f", {action_count} setup actions"
 
     if fail_count:
         click.echo(click.style(summary, fg="red", bold=True))
-    elif warn_count:
+    elif warn_count or action_count:
         click.echo(click.style(summary, fg="yellow", bold=True))
     else:
         click.echo(click.style(summary, fg="green", bold=True))

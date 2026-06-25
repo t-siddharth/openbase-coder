@@ -7,6 +7,7 @@ import secrets
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from shutil import which
 
@@ -69,6 +70,11 @@ from openbase_coder_cli.paths import (
     OPENBASE_CLAUDE_MD_PATH,
     OPENBASE_CLAUDE_SETTINGS_PATH,
     OPENBASE_SOUNDS_DIR,
+)
+from openbase_coder_cli.runtime import (
+    current_runtime_package,
+    packaged_instructions_dir,
+    packaged_skills_dir,
 )
 from openbase_coder_cli.services.installation import InstallationConfig
 from openbase_coder_cli.services.launchd import install_all_services
@@ -152,6 +158,12 @@ AUDIO_PROVIDER_OPTIONS = (
     AUDIO_PROVIDER_LOCAL,
 )
 DEFAULT_AUDIO_PROVIDER = AUDIO_PROVIDER_OPENBASE_CLOUD
+LOCAL_AUDIO_REQUIREMENTS = (
+    "huggingface-hub>=0.36.0",
+    "kokoro>=0.9.4",
+    "mlx-whisper>=0.4.3",
+)
+LOCAL_AUDIO_PYTHON_MAX = (3, 13)
 
 
 @click.command()
@@ -185,6 +197,11 @@ DEFAULT_AUDIO_PROVIDER = AUDIO_PROVIDER_OPENBASE_CLOUD
     "--skip-clone",
     is_flag=True,
     help="Skip git clone step.",
+)
+@click.option(
+    "--dev-workspace",
+    is_flag=True,
+    help="Clone/sync the Openbase Coder workspace for development-mode runtime assets.",
 )
 @click.option(
     "--skip-services",
@@ -224,6 +241,7 @@ def setup(
     assembly_ai_api_key: str,
     cartesia_api_key: str,
     skip_clone: bool,
+    dev_workspace: bool,
     skip_services: bool,
     link_codex_config: bool,
     coding_backend: str | None,
@@ -241,15 +259,38 @@ def setup(
     OPENBASE_BASE_DIR.mkdir(parents=True, exist_ok=True)
     _ensure_thread_sync_exchange_dir()
     _ensure_bundled_sounds()
+    runtime_package = current_runtime_package()
+    use_dev_workspace = dev_workspace or runtime_package is None
 
     # --- Clone workspace ---
-    if not skip_clone:
+    if use_dev_workspace and not skip_clone:
         _clone_workspace(workspace_dir)
+    elif runtime_package is not None:
+        click.echo(f"Using bundled runtime assets from {runtime_package.root}")
+    else:
+        click.echo("Skipping workspace clone; no bundled runtime package detected.")
 
     # --- Write installation.json ---
     config = InstallationConfig(
-        workspace_path=workspace_dir,
+        workspace_path=workspace_dir if use_dev_workspace else "",
         env_file=env_file,
+        package_path=str(runtime_package.root) if runtime_package else "",
+        console_build_dir=(
+            str(runtime_package.console_build_dir)
+            if runtime_package and runtime_package.console_build_dir.is_dir()
+            else ""
+        ),
+        python_path=(
+            str(runtime_package.python_path)
+            if runtime_package and runtime_package.python_path.is_file()
+            else ""
+        ),
+        livekit_server_path=(
+            str(runtime_package.livekit_server_path)
+            if runtime_package and runtime_package.livekit_server_path.is_file()
+            else ""
+        ),
+        standalone=runtime_package is not None,
     )
     config.save()
     click.echo("Wrote installation.json")
@@ -267,32 +308,44 @@ def setup(
 
     # --- Symlink Codex auth into the service CODEX_HOME ---
     _symlink_codex_auth()
-    _ensure_codex_home_default_files(workspace_dir)
+    _ensure_codex_home_default_files(workspace_dir if use_dev_workspace else "")
     _ensure_codex_home_dispatcher_config(audio_provider=audio_provider)
     if audio_provider == AUDIO_PROVIDER_LOCAL:
+        _ensure_local_audio_dependencies(runtime_package)
         _download_local_audio_models()
-    _symlink_codex_home_skills(workspace_dir)
+    _symlink_codex_home_skills(workspace_dir if use_dev_workspace else "")
 
     # --- Initialize CLI workspace ---
-    _init_cli_workspace(workspace_dir)
+    if use_dev_workspace:
+        _init_cli_workspace(workspace_dir)
 
     # --- Configure the service CODEX_HOME ---
     if link_codex_config:
         _ensure_codex_home_config(
-            workspace_dir,
+            workspace_dir if use_dev_workspace else "",
             coding_backend=selected_coding_backend,
             link_codex_config=True,
         )
     else:
-        _ensure_codex_home_config(workspace_dir, coding_backend=selected_coding_backend)
-    _ensure_claude_config(workspace_dir)
+        _ensure_codex_home_config(
+            workspace_dir if use_dev_workspace else "",
+            coding_backend=selected_coding_backend,
+        )
+    _ensure_claude_config(workspace_dir if use_dev_workspace else "")
     _ensure_claude_auth_bridge(login_if_needed=selected_coding_backend == "claude_code")
 
     # --- Install/update user-facing CLI shim ---
-    _install_cli_shim(workspace_dir)
+    _install_cli_shim(workspace_dir if use_dev_workspace else "")
 
     # --- Build console ---
-    _build_console(workspace_dir)
+    if use_dev_workspace:
+        _build_console(workspace_dir)
+    elif config.console_build_dir:
+        click.echo(f"Using bundled console build at {config.console_build_dir}")
+    else:
+        click.echo(
+            "No bundled console build found; server will require a console build."
+        )
 
     # --- Install services ---
     if not skip_services:
@@ -578,15 +631,15 @@ def _ensure_codex_home_default_files(workspace_dir: str) -> None:
     """Create Openbase-managed agent instruction files."""
     CODEX_HOME_DIR.mkdir(parents=True, exist_ok=True)
     OPENBASE_CLAUDE_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    defaults_dir = Path(workspace_dir) / CODEX_HOME_DEFAULT_SOURCE_DIR
+    defaults_dir = _default_instructions_dir(workspace_dir)
 
     ensure_openbase_agents_md(
-        workspace_dir,
+        defaults_dir.parent,
         codex_home_dir=CODEX_HOME_DIR,
         report=click.echo,
     )
     ensure_openbase_instruction_md(
-        workspace_dir,
+        defaults_dir.parent,
         target_path=OPENBASE_CLAUDE_MD_PATH,
         document_label="Claude config CLAUDE.md",
         report=click.echo,
@@ -739,10 +792,81 @@ def _audio_provider_config(audio_provider: str) -> dict[str, str]:
 
 def _download_local_audio_models() -> None:
     click.echo("Downloading local TTS voices...")
-    get_tts_provider(KOKORO_PROVIDER_ID).download_all_voices()
+    tts_status = get_tts_provider(KOKORO_PROVIDER_ID).download_all_voices()
+    if not tts_status.ready:
+        raise click.ClickException(
+            tts_status.detail or "Unable to download local TTS voices."
+        )
     click.echo("Downloading local STT model...")
-    download_local_mlx_whisper()
+    stt_status = download_local_mlx_whisper()
+    if not stt_status.ready:
+        raise click.ClickException(
+            stt_status.detail or "Unable to download local STT model."
+        )
     click.echo("Downloaded local voice audio models.")
+
+
+def _ensure_local_audio_dependencies(runtime_package) -> None:
+    python_path = (
+        runtime_package.python_path if runtime_package else Path(sys.executable)
+    )
+    version = _python_version(python_path)
+    if version >= LOCAL_AUDIO_PYTHON_MAX:
+        raise click.ClickException(
+            "Local audio currently requires a Python 3.12 Openbase Coder runtime "
+            "because Kokoro declares Python <3.13. Reinstall Openbase Coder with "
+            "a Python 3.12 standalone package, or use --audio-provider openbase-cloud."
+        )
+    if _local_audio_dependencies_available(python_path):
+        return
+
+    click.echo("Installing local audio Python dependencies...")
+    try:
+        subprocess.run(
+            [
+                str(python_path),
+                "-m",
+                "pip",
+                "install",
+                "--upgrade",
+                *LOCAL_AUDIO_REQUIREMENTS,
+            ],
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise click.ClickException(
+            "Failed to install local audio dependencies. "
+            "Use --audio-provider openbase-cloud or retry after checking network access."
+        ) from exc
+
+
+def _local_audio_dependencies_available(python_path: Path) -> bool:
+    result = subprocess.run(
+        [
+            str(python_path),
+            "-c",
+            "import huggingface_hub, kokoro, mlx_whisper",
+        ],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
+def _python_version(python_path: Path) -> tuple[int, int]:
+    result = subprocess.run(
+        [
+            str(python_path),
+            "-c",
+            "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    major, minor = result.stdout.strip().split(".", 1)
+    return int(major), int(minor)
 
 
 def _migrate_legacy_codex_home_dispatcher_config() -> None:
@@ -778,7 +902,7 @@ def _ensure_legacy_dispatcher_config_link() -> None:
 
 def _symlink_codex_home_skills(workspace_dir: str) -> None:
     """Symlink workspace-owned skills into Openbase-managed agent homes."""
-    source_root = Path(workspace_dir) / CODEX_HOME_SKILLS_SOURCE_DIR
+    source_root = _default_skills_dir(workspace_dir)
     skill_sources = _workspace_skill_sources(source_root)
     if not skill_sources:
         click.echo(f"No workspace skills found at {source_root}")
@@ -960,7 +1084,11 @@ def _merge_claude_settings(settings: dict[str, object]) -> dict[str, object]:
 
 
 def _merge_claude_md_excludes(value: object) -> list[str]:
-    excludes = [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+    excludes = (
+        [item for item in value if isinstance(item, str)]
+        if isinstance(value, list)
+        else []
+    )
     normal_claude_md_path = str((NORMAL_CLAUDE_CONFIG_DIR / "CLAUDE.md").expanduser())
     if normal_claude_md_path not in excludes:
         excludes.append(normal_claude_md_path)
@@ -1061,6 +1189,12 @@ def _super_agents_mcp_command(workspace_dir: Path) -> tuple[Path, list[str]]:
         if candidate.is_file():
             return candidate, []
 
+    runtime_package = current_runtime_package()
+    if runtime_package is not None:
+        bundled_command = runtime_package.python_path.parent / SUPER_AGENTS_MCP_COMMAND
+        if bundled_command.is_file():
+            return bundled_command, []
+
     if command := which(SUPER_AGENTS_MCP_COMMAND):
         return Path(command), []
 
@@ -1076,6 +1210,28 @@ def _super_agents_mcp_command(workspace_dir: Path) -> tuple[Path, list[str]]:
         ]
 
     return candidates[0], []
+
+
+def _default_instructions_dir(workspace_dir: str) -> Path:
+    if workspace_dir:
+        workspace_source = Path(workspace_dir) / CODEX_HOME_DEFAULT_SOURCE_DIR
+        if workspace_source.is_dir():
+            return workspace_source
+    packaged = packaged_instructions_dir()
+    if packaged is not None:
+        return packaged
+    return Path(workspace_dir or DEFAULT_WORKSPACE_DIR) / CODEX_HOME_DEFAULT_SOURCE_DIR
+
+
+def _default_skills_dir(workspace_dir: str) -> Path:
+    if workspace_dir:
+        workspace_source = Path(workspace_dir) / CODEX_HOME_SKILLS_SOURCE_DIR
+        if workspace_source.is_dir():
+            return workspace_source
+    packaged = packaged_skills_dir()
+    if packaged is not None:
+        return packaged
+    return Path(workspace_dir or DEFAULT_WORKSPACE_DIR) / CODEX_HOME_SKILLS_SOURCE_DIR
 
 
 def _toml_args_line(args: list[str]) -> str:
@@ -1210,14 +1366,10 @@ def _init_cli_workspace(workspace_dir: str) -> None:
 
 def _install_cli_shim(workspace_dir: str) -> None:
     """Install a stable user command that runs the workspace checkout."""
+    runtime_package = current_runtime_package()
     uv_bin = which("uv")
-    if not uv_bin:
+    if runtime_package is None and not uv_bin:
         click.echo("'uv' not found on PATH, skipping CLI shim install.")
-        return
-
-    cli_dir = Path(workspace_dir) / "cli"
-    if not cli_dir.is_dir():
-        click.echo(f"CLI directory not found at {cli_dir}, skipping CLI shim install.")
         return
 
     user_bin = Path.home() / ".local" / "bin"
@@ -1225,11 +1377,26 @@ def _install_cli_shim(workspace_dir: str) -> None:
     shim_path = user_bin / "openbase-coder"
     if shim_path.is_symlink():
         shim_path.unlink()
-    shim = (
-        "#!/bin/sh\n"
-        f"cd {shlex.quote(str(cli_dir))} || exit 1\n"
-        f'exec {shlex.quote(uv_bin)} run openbase-coder "$@"\n'
-    )
+
+    if runtime_package is not None and runtime_package.openbase_coder_path.is_file():
+        shim = (
+            "#!/bin/sh\n"
+            f"export OPENBASE_CODER_PACKAGE_DIR={shlex.quote(str(runtime_package.root))}\n"
+            f'exec {shlex.quote(str(runtime_package.openbase_coder_path))} "$@"\n'
+        )
+    else:
+        cli_dir = Path(workspace_dir) / "cli"
+        if not cli_dir.is_dir():
+            click.echo(
+                f"CLI directory not found at {cli_dir}, skipping CLI shim install."
+            )
+            return
+        shim = (
+            "#!/bin/sh\n"
+            f"cd {shlex.quote(str(cli_dir))} || exit 1\n"
+            f'exec {shlex.quote(uv_bin)} run openbase-coder "$@"\n'
+        )
+
     shim_path.write_text(shim)
     shim_path.chmod(0o755)
     click.echo(f"Installed openbase-coder shim at {shim_path}")

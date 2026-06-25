@@ -92,6 +92,8 @@ from openbase_coder_cli.openbase_coder_cli_app.services_views import (
     openbase_service_action,
     openbase_services_list,
     service_status,
+    thread_device_sync_conflict_resolve,
+    thread_device_sync_conflicts,
     thread_device_sync_status,
 )
 from openbase_coder_cli.openbase_coder_cli_app.skills import _home_skills_dir
@@ -294,6 +296,8 @@ __all__ = [
     "service_status",
     "service_tier_settings",
     "thread_device_sync_status",
+    "thread_device_sync_conflicts",
+    "thread_device_sync_conflict_resolve",
     "set_dispatcher_voice",
     "skill_detail",
     "skills_list",

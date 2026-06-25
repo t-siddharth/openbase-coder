@@ -52,6 +52,20 @@ _CODE_LINE_COUNT_NARRATION_RE = re.compile(
     rf"\b(?:it\s+is\s+)?{_CODE_LANGUAGE_PATTERN}\s*,?\s*{_LINE_COUNT_PATTERN}[.!?]?",
     re.IGNORECASE,
 )
+_TECHNICAL_OUTPUT_MARKER_RE = re.compile(
+    r"^\s*(?:"
+    r"traceback\b|"
+    r"setsummary\b|"
+    r"exec_command\b|"
+    r"apply_patch\b|"
+    r"sandbox_permissions\b|"
+    r"tool call\b|"
+    r"stack trace\b|"
+    r"exception in thread\b"
+    r")",
+    re.IGNORECASE,
+)
+_STRUCTURED_OUTPUT_RE = re.compile(r"[:={}\[\]<>]|(?:\b\w+_\w+\b)")
 
 
 @dataclass(frozen=True)
@@ -291,23 +305,10 @@ def _is_table_start(lines: list[str], index: int) -> bool:
 
 
 def _looks_like_non_speech_output(text: str) -> bool:
-    lowered = text.lower()
-    if any(
-        marker in lowered
-        for marker in (
-            "traceback",
-            "setsummary",
-            "exec_command",
-            "apply_patch",
-            "sandbox_permissions",
-            "tool call",
-            "stack trace",
-            "exception in thread",
-        )
-    ):
+    lines = [line for line in text.splitlines() if line.strip()]
+    if any(_looks_like_technical_marker_line(line) for line in lines):
         return True
 
-    lines = [line for line in text.splitlines() if line.strip()]
     if len(lines) >= 3:
         stack_lines = sum(
             bool(
@@ -325,6 +326,14 @@ def _looks_like_non_speech_output(text: str) -> bool:
     code_chars = sum(text.count(char) for char in "{}[];=$<>")
     words = max(len(text.split()), 1)
     return code_chars / words > 0.55
+
+
+def _looks_like_technical_marker_line(line: str) -> bool:
+    if not _TECHNICAL_OUTPUT_MARKER_RE.search(line):
+        return False
+    stripped = line.strip()
+    words = len(stripped.split())
+    return words <= 4 or bool(_STRUCTURED_OUTPUT_RE.search(stripped))
 
 
 def _humanize_inline(text: str) -> str:

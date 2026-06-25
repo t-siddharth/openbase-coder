@@ -1,0 +1,1773 @@
+"""Sync Claude Code sessions between normal and Openbase-managed config homes."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import shutil
+import sqlite3
+import time
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from openbase_coder_cli.paths import (
+    NORMAL_CLAUDE_CONFIG_DIR,
+    OPENBASE_BASE_DIR,
+    OPENBASE_CLAUDE_CONFIG_DIR,
+)
+
+from .thread_exchange import DEFAULT_DEVICE_IDENTITY_PATH
+from .thread_import import _rollout_has_prefix, _rollout_open_for_write, _string
+from .thread_sync_common import (
+    DeviceIdentity,
+    device_exported_fingerprints,
+    device_ledger_entry,
+    fingerprint_matches,
+    get_or_create_device_identity,
+    import_snapshot_decision,
+    parent_fingerprint_for_export,
+    read_device_identity,
+    read_device_ledger,
+    read_scoped_ledger,
+    record_device_conflict,
+    record_device_snapshot,
+    record_sync_conflict,
+    record_synced_pair,
+    snapshot_already_imported,
+    write_json_atomic,
+    write_scoped_ledger,
+)
+
+SCHEMA_VERSION = 1
+CLAUDE_SYNC_LEDGER_NAME = "claude-thread-sync-ledger.json"
+CLAUDE_DEVICE_LEDGER_NAME = "claude-thread-device-sync-ledger.json"
+DEFAULT_DEVICE_EXCHANGE_DIR = OPENBASE_BASE_DIR / "claude-thread-sync"
+DEFAULT_DEVICE_LEDGER_PATH = OPENBASE_BASE_DIR / CLAUDE_DEVICE_LEDGER_NAME
+DEFAULT_SYNC_MAX_AGE_DAYS = 15
+IMPORT_STAGING_DIR_NAME = ".claude-thread-sync-staging"
+IMPORT_BACKUP_DIR_NAME = ".claude-thread-sync-backups"
+DEFAULT_SUPER_AGENTS_CLAUDE_CODE_HOME = (
+    Path.home() / ".local" / "share" / "super-agents-claude-code"
+)
+DEFAULT_LEGACY_SUPER_AGENTS_STATE_PATH = Path.home() / ".super-agents" / "state.json"
+SUPER_AGENTS_CLAUDE_CODE_HOME_ENV = "SUPER_AGENTS_CLAUDE_CODE_HOME"
+CLAUDE_EVENT_TYPES = {
+    "assistant",
+    "attachment",
+    "file-history-snapshot",
+    "last-prompt",
+    "permission-mode",
+    "queue-operation",
+    "system",
+    "user",
+}
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ClaudeSessionSnapshot:
+    session_id: str
+    project_key: str
+    root_path: Path
+    relative_root: Path
+    cwd: str | None
+    name: str
+    latest_assistant_message: str | None
+    created_at_ms: int | None
+    updated_at_ms: int
+    fingerprint: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ClaudeThreadSyncResult:
+    session_id: str
+    status: str
+    direction: str | None
+    reason: str
+    source_path: str | None = None
+    target_path: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "status": self.status,
+            "direction": self.direction,
+            "reason": self.reason,
+            "source_path": self.source_path,
+            "target_path": self.target_path,
+        }
+
+
+@dataclass(frozen=True)
+class ClaudeThreadSnapshotResult:
+    session_id: str
+    status: str
+    reason: str
+    snapshot_path: str | None = None
+    fingerprint: str | None = None
+    source_device_id: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "status": self.status,
+            "reason": self.reason,
+            "snapshot_path": self.snapshot_path,
+            "fingerprint": self.fingerprint,
+            "source_device_id": self.source_device_id,
+        }
+
+
+def sync_claude_threads_once(
+    *,
+    normal_home: Path = NORMAL_CLAUDE_CONFIG_DIR,
+    openbase_home: Path = OPENBASE_CLAUDE_CONFIG_DIR,
+    ledger_path: Path = OPENBASE_BASE_DIR / CLAUDE_SYNC_LEDGER_NAME,
+    super_agents_db_path: Path | None = None,
+    stability_delay_seconds: float = 0.2,
+    max_age_days: int | None = DEFAULT_SYNC_MAX_AGE_DAYS,
+    active_session_ids: set[str] | None = None,
+) -> list[ClaudeThreadSyncResult]:
+    """Run one conservative bidirectional sync pass between Claude Code homes."""
+    normal_home = normal_home.expanduser()
+    openbase_home = openbase_home.expanduser()
+    if not normal_home.exists():
+        raise FileNotFoundError(f"Normal Claude config dir not found: {normal_home}")
+    openbase_home.mkdir(parents=True, exist_ok=True)
+
+    active_ids = set(active_session_ids or set()) | _active_claude_session_ids(
+        super_agents_db_path
+    )
+    normal_sessions = _discover_sessions(
+        normal_home,
+        stability_delay_seconds=stability_delay_seconds,
+    )
+    openbase_sessions = _discover_sessions(
+        openbase_home,
+        stability_delay_seconds=stability_delay_seconds,
+    )
+    ledger = _read_sync_ledger(ledger_path)
+    cutoff_ms = _sync_cutoff_ms(max_age_days)
+
+    results: list[ClaudeThreadSyncResult] = []
+    for session_id in _session_ids_by_updated_at(normal_sessions, openbase_sessions):
+        normal_snapshot = normal_sessions.get(session_id)
+        openbase_snapshot = openbase_sessions.get(session_id)
+        try:
+            if (
+                cutoff_ms is not None
+                and _latest_updated_ms(normal_snapshot, openbase_snapshot) < cutoff_ms
+            ):
+                result = ClaudeThreadSyncResult(
+                    session_id, "skipped", None, "skipped_old"
+                )
+            elif session_id in active_ids:
+                result = ClaudeThreadSyncResult(
+                    session_id, "skipped", None, "skipped_active"
+                )
+            else:
+                result = _sync_one_session(
+                    session_id,
+                    normal_snapshot=normal_snapshot,
+                    openbase_snapshot=openbase_snapshot,
+                    normal_home=normal_home,
+                    openbase_home=openbase_home,
+                    ledger=ledger,
+                )
+        except Exception:
+            result = ClaudeThreadSyncResult(session_id, "error", None, "error")
+            logger.exception("claude_thread_sync event=error session_id=%s", session_id)
+        else:
+            _log_sync_result(result)
+        results.append(result)
+
+        updated_openbase = openbase_sessions.get(session_id)
+        if result.direction == "normal_to_openbase" and result.status == "transferred":
+            updated_openbase = _read_session_snapshot(
+                openbase_home,
+                _target_root_path(normal_snapshot.root_path, normal_home, openbase_home)
+                if normal_snapshot is not None
+                else None,
+                stability_delay_seconds=0,
+            )
+            if updated_openbase is not None:
+                openbase_sessions[session_id] = updated_openbase
+        if updated_openbase is not None:
+            _backfill_openbase_session_metadata(
+                updated_openbase,
+                db_path=super_agents_db_path,
+            )
+
+    _write_sync_ledger(ledger_path, ledger)
+    return results
+
+
+def sync_claude_thread_snapshots_once(
+    *,
+    openbase_home: Path = OPENBASE_CLAUDE_CONFIG_DIR,
+    exchange_dir: Path = DEFAULT_DEVICE_EXCHANGE_DIR,
+    device_identity_path: Path = DEFAULT_DEVICE_IDENTITY_PATH,
+    ledger_path: Path = DEFAULT_DEVICE_LEDGER_PATH,
+    super_agents_db_path: Path | None = None,
+    stability_delay_seconds: float = 0.2,
+    max_age_days: int | None = DEFAULT_SYNC_MAX_AGE_DAYS,
+) -> dict[str, list[ClaudeThreadSnapshotResult]]:
+    exports = export_claude_thread_snapshots(
+        openbase_home=openbase_home,
+        exchange_dir=exchange_dir,
+        device_identity_path=device_identity_path,
+        ledger_path=ledger_path,
+        super_agents_db_path=super_agents_db_path,
+        stability_delay_seconds=stability_delay_seconds,
+        max_age_days=max_age_days,
+    )
+    imports = import_claude_thread_snapshots(
+        openbase_home=openbase_home,
+        exchange_dir=exchange_dir,
+        device_identity_path=device_identity_path,
+        ledger_path=ledger_path,
+        super_agents_db_path=super_agents_db_path,
+    )
+    return {"exports": exports, "imports": imports}
+
+
+def export_claude_thread_snapshots(
+    *,
+    openbase_home: Path = OPENBASE_CLAUDE_CONFIG_DIR,
+    exchange_dir: Path = DEFAULT_DEVICE_EXCHANGE_DIR,
+    device_identity_path: Path = DEFAULT_DEVICE_IDENTITY_PATH,
+    ledger_path: Path = DEFAULT_DEVICE_LEDGER_PATH,
+    super_agents_db_path: Path | None = None,
+    stability_delay_seconds: float = 0.2,
+    max_age_days: int | None = DEFAULT_SYNC_MAX_AGE_DAYS,
+    active_session_ids: set[str] | None = None,
+) -> list[ClaudeThreadSnapshotResult]:
+    openbase_home = openbase_home.expanduser()
+    openbase_home.mkdir(parents=True, exist_ok=True)
+    identity = get_or_create_device_identity(device_identity_path)
+    active_ids = set(active_session_ids or set()) | _active_claude_session_ids(
+        super_agents_db_path
+    )
+    ledger = _read_device_ledger(ledger_path)
+    cutoff_ms = _sync_cutoff_ms(max_age_days)
+    sessions = _discover_sessions(
+        openbase_home,
+        stability_delay_seconds=stability_delay_seconds,
+    )
+
+    results: list[ClaudeThreadSnapshotResult] = []
+    for snapshot in sorted(
+        sessions.values(), key=lambda item: item.updated_at_ms, reverse=True
+    ):
+        if cutoff_ms is not None and snapshot.updated_at_ms < cutoff_ms:
+            results.append(
+                ClaudeThreadSnapshotResult(
+                    snapshot.session_id, "skipped", "skipped_old"
+                )
+            )
+            continue
+        if snapshot.session_id in active_ids:
+            results.append(
+                ClaudeThreadSnapshotResult(
+                    snapshot.session_id, "skipped", "skipped_active"
+                )
+            )
+            continue
+
+        fingerprint_id = _fingerprint_id(snapshot.fingerprint)
+        session_ledger = _device_ledger_session(ledger, snapshot.session_id)
+        if fingerprint_id in _device_exported_fingerprints(
+            session_ledger, identity.device_id
+        ):
+            session_ledger["local_fingerprint"] = fingerprint_id
+            results.append(
+                ClaudeThreadSnapshotResult(
+                    snapshot.session_id,
+                    "already_exported",
+                    "fingerprint_current",
+                    fingerprint=fingerprint_id,
+                )
+            )
+            continue
+
+        parent_fingerprint = _parent_fingerprint_for_device_export(
+            session_ledger, fingerprint_id
+        )
+        snapshot_path = _write_device_snapshot(
+            exchange_dir=exchange_dir,
+            identity=identity,
+            openbase_home=openbase_home,
+            snapshot=snapshot,
+            fingerprint_id=fingerprint_id,
+            parent_fingerprint=parent_fingerprint,
+        )
+        _record_device_snapshot(
+            session_ledger,
+            device_id=identity.device_id,
+            fingerprint_id=fingerprint_id,
+            snapshot_path=snapshot_path,
+            status="exported",
+        )
+        session_ledger["local_fingerprint"] = fingerprint_id
+        results.append(
+            ClaudeThreadSnapshotResult(
+                snapshot.session_id,
+                "exported",
+                "snapshot_written",
+                str(snapshot_path),
+                fingerprint_id,
+                identity.device_id,
+            )
+        )
+
+    _write_device_ledger(ledger_path, ledger)
+    return results
+
+
+def import_claude_thread_snapshots(
+    *,
+    openbase_home: Path = OPENBASE_CLAUDE_CONFIG_DIR,
+    exchange_dir: Path = DEFAULT_DEVICE_EXCHANGE_DIR,
+    device_identity_path: Path = DEFAULT_DEVICE_IDENTITY_PATH,
+    ledger_path: Path = DEFAULT_DEVICE_LEDGER_PATH,
+    super_agents_db_path: Path | None = None,
+) -> list[ClaudeThreadSnapshotResult]:
+    openbase_home = openbase_home.expanduser()
+    openbase_home.mkdir(parents=True, exist_ok=True)
+    identity = get_or_create_device_identity(device_identity_path)
+    ledger = _read_device_ledger(ledger_path)
+    active_ids = _active_claude_session_ids(super_agents_db_path)
+    results: list[ClaudeThreadSnapshotResult] = []
+
+    for snapshot_dir in _device_snapshot_dirs(exchange_dir):
+        try:
+            metadata = _read_device_snapshot_metadata(snapshot_dir / "metadata.json")
+        except ValueError as exc:
+            results.append(
+                ClaudeThreadSnapshotResult(
+                    snapshot_dir.parent.name,
+                    "skipped",
+                    str(exc),
+                    str(snapshot_dir),
+                )
+            )
+            continue
+
+        session_id = metadata["session_id"]
+        source_device_id = metadata["source_device_id"]
+        fingerprint_id = metadata["fingerprint"]
+        if source_device_id == identity.device_id:
+            results.append(
+                ClaudeThreadSnapshotResult(
+                    session_id,
+                    "skipped",
+                    "same_device",
+                    str(snapshot_dir),
+                    fingerprint_id,
+                    source_device_id,
+                )
+            )
+            continue
+
+        session_ledger = _device_ledger_session(ledger, session_id)
+        if _snapshot_already_imported(
+            session_ledger, source_device_id, fingerprint_id
+        ):
+            results.append(
+                ClaudeThreadSnapshotResult(
+                    session_id,
+                    "already_imported",
+                    "fingerprint_seen",
+                    str(snapshot_dir),
+                    fingerprint_id,
+                    source_device_id,
+                )
+            )
+            continue
+        if session_ledger.get("conflict"):
+            _record_device_snapshot(
+                session_ledger,
+                device_id=source_device_id,
+                fingerprint_id=fingerprint_id,
+                snapshot_path=snapshot_dir,
+                status="seen_after_conflict",
+            )
+            results.append(
+                ClaudeThreadSnapshotResult(
+                    session_id,
+                    "conflict",
+                    "conflict_unresolved",
+                    str(snapshot_dir),
+                    fingerprint_id,
+                    source_device_id,
+                )
+            )
+            continue
+
+        validation_error = _validate_device_snapshot(snapshot_dir, metadata)
+        if validation_error:
+            results.append(
+                ClaudeThreadSnapshotResult(
+                    session_id,
+                    "skipped",
+                    validation_error,
+                    str(snapshot_dir),
+                    fingerprint_id,
+                    source_device_id,
+                )
+            )
+            continue
+
+        root_relative_path = Path(metadata["root_relative_path"])
+        local_snapshot = _read_session_snapshot(
+            openbase_home,
+            openbase_home / root_relative_path,
+            stability_delay_seconds=0,
+        )
+        local_fingerprint = (
+            _fingerprint_id(local_snapshot.fingerprint)
+            if local_snapshot is not None
+            else None
+        )
+        parent_fingerprint = _string(metadata.get("parent_fingerprint"))
+        decision = _device_import_decision(
+            local_snapshot=local_snapshot,
+            local_fingerprint=local_fingerprint,
+            incoming_fingerprint=fingerprint_id,
+            parent_fingerprint=parent_fingerprint,
+            session_ledger=session_ledger,
+        )
+        if decision == "same_content":
+            _record_device_snapshot(
+                session_ledger,
+                device_id=source_device_id,
+                fingerprint_id=fingerprint_id,
+                snapshot_path=snapshot_dir,
+                status="same_content",
+            )
+            results.append(
+                ClaudeThreadSnapshotResult(
+                    session_id,
+                    "already_imported",
+                    "same_content",
+                    str(snapshot_dir),
+                    fingerprint_id,
+                    source_device_id,
+                )
+            )
+            continue
+        if decision == "conflict":
+            _record_device_conflict(
+                session_ledger,
+                local_fingerprint=local_fingerprint,
+                incoming_fingerprint=fingerprint_id,
+                source_device_id=source_device_id,
+                snapshot_path=snapshot_dir,
+                reason="divergent_fingerprint",
+            )
+            results.append(
+                ClaudeThreadSnapshotResult(
+                    session_id,
+                    "conflict",
+                    "divergent_fingerprint",
+                    str(snapshot_dir),
+                    fingerprint_id,
+                    source_device_id,
+                )
+            )
+            continue
+        if session_id in active_ids:
+            results.append(
+                ClaudeThreadSnapshotResult(
+                    session_id,
+                    "skipped",
+                    "target_active",
+                    str(snapshot_dir),
+                    fingerprint_id,
+                    source_device_id,
+                )
+            )
+            continue
+
+        try:
+            _import_device_snapshot_into_home(
+                snapshot_dir=snapshot_dir,
+                metadata=metadata,
+                openbase_home=openbase_home,
+                overwrite=local_snapshot is not None,
+            )
+        except Exception:
+            logger.exception(
+                "claude_thread_device_sync event=import_error session_id=%s "
+                "snapshot_path=%s",
+                session_id,
+                snapshot_dir,
+            )
+            results.append(
+                ClaudeThreadSnapshotResult(
+                    session_id,
+                    "error",
+                    "import_failed",
+                    str(snapshot_dir),
+                    fingerprint_id,
+                    source_device_id,
+                )
+            )
+            continue
+        imported_snapshot = _read_session_snapshot(
+            openbase_home,
+            openbase_home / root_relative_path,
+            stability_delay_seconds=0,
+        )
+        if imported_snapshot is not None:
+            _backfill_openbase_session_metadata(
+                imported_snapshot,
+                db_path=super_agents_db_path,
+            )
+        _record_device_snapshot(
+            session_ledger,
+            device_id=source_device_id,
+            fingerprint_id=fingerprint_id,
+            snapshot_path=snapshot_dir,
+            status="imported",
+        )
+        session_ledger["local_fingerprint"] = fingerprint_id
+        results.append(
+            ClaudeThreadSnapshotResult(
+                session_id,
+                "imported",
+                "snapshot_imported",
+                str(snapshot_dir),
+                fingerprint_id,
+                source_device_id,
+            )
+        )
+
+    _write_device_ledger(ledger_path, ledger)
+    return results
+
+
+def claude_thread_snapshot_status(
+    *,
+    exchange_dir: Path = DEFAULT_DEVICE_EXCHANGE_DIR,
+    device_identity_path: Path = DEFAULT_DEVICE_IDENTITY_PATH,
+    ledger_path: Path = DEFAULT_DEVICE_LEDGER_PATH,
+) -> dict[str, Any]:
+    identity = read_device_identity(device_identity_path)
+    ledger = _read_device_ledger(ledger_path)
+    conflicts = [
+        {"session_id": session_id, **value["conflict"]}
+        for session_id, value in ledger.get("sessions", {}).items()
+        if isinstance(value, dict) and isinstance(value.get("conflict"), dict)
+    ]
+    snapshots = list(_device_snapshot_dirs(exchange_dir))
+    return {
+        "device": identity.to_json() if identity else None,
+        "exchange_dir": str(exchange_dir),
+        "ledger_path": str(ledger_path),
+        "snapshot_count": len(snapshots),
+        "session_count": len(ledger.get("sessions", {})),
+        "conflict_count": len(conflicts),
+        "conflicts": conflicts,
+    }
+
+
+def _sync_one_session(
+    session_id: str,
+    *,
+    normal_snapshot: ClaudeSessionSnapshot | None,
+    openbase_snapshot: ClaudeSessionSnapshot | None,
+    normal_home: Path,
+    openbase_home: Path,
+    ledger: dict[str, Any],
+) -> ClaudeThreadSyncResult:
+    if normal_snapshot is not None and openbase_snapshot is None:
+        return _transfer_session(
+            normal_snapshot,
+            source_home=normal_home,
+            target_home=openbase_home,
+            direction="normal_to_openbase",
+            reason="synced_to_openbase",
+            ledger=ledger,
+            overwrite=False,
+        )
+    if openbase_snapshot is not None and normal_snapshot is None:
+        return _transfer_session(
+            openbase_snapshot,
+            source_home=openbase_home,
+            target_home=normal_home,
+            direction="openbase_to_normal",
+            reason="synced_to_normal",
+            ledger=ledger,
+            overwrite=False,
+        )
+    if normal_snapshot is None or openbase_snapshot is None:
+        return ClaudeThreadSyncResult(session_id, "skipped", None, "not_found")
+
+    normal_fp = normal_snapshot.fingerprint
+    openbase_fp = openbase_snapshot.fingerprint
+    if _same_fingerprint(normal_fp, openbase_fp):
+        _record_synced_pair(ledger, session_id, normal_fp, openbase_fp, "same_content")
+        return ClaudeThreadSyncResult(session_id, "already_synced", None, "same_content")
+
+    append_only_result = _sync_append_only_prefix_conflict(
+        normal_snapshot=normal_snapshot,
+        openbase_snapshot=openbase_snapshot,
+        normal_home=normal_home,
+        openbase_home=openbase_home,
+        ledger=ledger,
+    )
+    if append_only_result is not None:
+        return append_only_result
+
+    previous = ledger.get(session_id)
+    if not isinstance(previous, dict):
+        _record_conflict(ledger, session_id, normal_fp, openbase_fp, "both_homes_changed")
+        return ClaudeThreadSyncResult(session_id, "conflict", None, "both_homes_changed")
+    if previous.get("status") == "conflict":
+        _record_conflict(ledger, session_id, normal_fp, openbase_fp, "conflict_unresolved")
+        return ClaudeThreadSyncResult(session_id, "conflict", None, "conflict_unresolved")
+
+    normal_changed = not _fingerprint_matches(previous.get("normal"), normal_fp)
+    openbase_changed = not _fingerprint_matches(previous.get("openbase"), openbase_fp)
+    if normal_changed and openbase_changed:
+        _record_conflict(ledger, session_id, normal_fp, openbase_fp, "both_homes_changed")
+        return ClaudeThreadSyncResult(session_id, "conflict", None, "both_homes_changed")
+    if normal_changed:
+        return _transfer_session(
+            normal_snapshot,
+            source_home=normal_home,
+            target_home=openbase_home,
+            direction="normal_to_openbase",
+            reason="synced_to_openbase",
+            ledger=ledger,
+            overwrite=True,
+        )
+    if openbase_changed:
+        return _transfer_session(
+            openbase_snapshot,
+            source_home=openbase_home,
+            target_home=normal_home,
+            direction="openbase_to_normal",
+            reason="synced_to_normal",
+            ledger=ledger,
+            overwrite=True,
+        )
+    return ClaudeThreadSyncResult(session_id, "already_synced", None, "ledger_current")
+
+
+def _sync_append_only_prefix_conflict(
+    *,
+    normal_snapshot: ClaudeSessionSnapshot,
+    openbase_snapshot: ClaudeSessionSnapshot,
+    normal_home: Path,
+    openbase_home: Path,
+    ledger: dict[str, Any],
+) -> ClaudeThreadSyncResult | None:
+    normal_size = int(normal_snapshot.fingerprint.get("root_size") or 0)
+    openbase_size = int(openbase_snapshot.fingerprint.get("root_size") or 0)
+    if normal_size == openbase_size:
+        return None
+    if normal_size > openbase_size:
+        if not _rollout_has_prefix(normal_snapshot.root_path, openbase_snapshot.root_path):
+            return None
+        return _transfer_session(
+            normal_snapshot,
+            source_home=normal_home,
+            target_home=openbase_home,
+            direction="normal_to_openbase",
+            reason="synced_append_only_to_openbase",
+            ledger=ledger,
+            overwrite=True,
+        )
+    if not _rollout_has_prefix(openbase_snapshot.root_path, normal_snapshot.root_path):
+        return None
+    return _transfer_session(
+        openbase_snapshot,
+        source_home=openbase_home,
+        target_home=normal_home,
+        direction="openbase_to_normal",
+        reason="synced_append_only_to_normal",
+        ledger=ledger,
+        overwrite=True,
+    )
+
+
+def _transfer_session(
+    snapshot: ClaudeSessionSnapshot,
+    *,
+    source_home: Path,
+    target_home: Path,
+    direction: str,
+    reason: str,
+    ledger: dict[str, Any],
+    overwrite: bool,
+) -> ClaudeThreadSyncResult:
+    target_root = _target_root_path(snapshot.root_path, source_home, target_home)
+    if target_root.exists() and not overwrite:
+        return ClaudeThreadSyncResult(
+            snapshot.session_id,
+            "skipped",
+            direction,
+            "target_exists",
+            str(snapshot.root_path),
+            str(target_root),
+        )
+    _copy_session_into_home(
+        source_home=source_home,
+        source_root=snapshot.root_path,
+        target_home=target_home,
+        overwrite=overwrite,
+    )
+
+    target_snapshot = _read_session_snapshot(
+        target_home,
+        target_root,
+        stability_delay_seconds=0,
+    )
+    target_fp = target_snapshot.fingerprint if target_snapshot else snapshot.fingerprint
+    if direction == "normal_to_openbase":
+        _record_synced_pair(
+            ledger,
+            snapshot.session_id,
+            snapshot.fingerprint,
+            target_fp,
+            reason,
+        )
+    else:
+        _record_synced_pair(
+            ledger,
+            snapshot.session_id,
+            target_fp,
+            snapshot.fingerprint,
+            reason,
+        )
+    return ClaudeThreadSyncResult(
+        snapshot.session_id,
+        "transferred",
+        direction,
+        reason,
+        str(snapshot.root_path),
+        str(target_root),
+    )
+
+
+def _discover_sessions(
+    home: Path,
+    *,
+    stability_delay_seconds: float,
+) -> dict[str, ClaudeSessionSnapshot]:
+    sessions: dict[str, ClaudeSessionSnapshot] = {}
+    projects = home / "projects"
+    if not projects.exists():
+        return sessions
+    for root in projects.glob("*/*.jsonl"):
+        snapshot = _read_session_snapshot(
+            home,
+            root,
+            stability_delay_seconds=stability_delay_seconds,
+        )
+        if snapshot is not None:
+            sessions[snapshot.session_id] = snapshot
+    return sessions
+
+
+def _read_session_snapshot(
+    home: Path,
+    root: Path | None,
+    *,
+    stability_delay_seconds: float,
+) -> ClaudeSessionSnapshot | None:
+    if (
+        root is None
+        or root.is_symlink()
+        or not root.is_file()
+        or root.suffix != ".jsonl"
+    ):
+        return None
+    if _rollout_open_for_write(root) or not _path_stable(root, stability_delay_seconds):
+        return None
+    session_id = root.stem
+    parsed = _parse_claude_jsonl(root, session_id)
+    if parsed is None:
+        return None
+    fingerprint = _session_fingerprint(home, root)
+    if fingerprint is None:
+        return None
+    project_key = root.parent.name
+    cwd = parsed["cwd"] or _decode_project_key(project_key)
+    fallback_name = Path(cwd).name if cwd else session_id
+    return ClaudeSessionSnapshot(
+        session_id=session_id,
+        project_key=project_key,
+        root_path=root,
+        relative_root=root.relative_to(home),
+        cwd=cwd,
+        name=parsed["name"] or fallback_name or session_id,
+        latest_assistant_message=parsed["latest_assistant_message"],
+        created_at_ms=parsed["created_at_ms"],
+        updated_at_ms=parsed["updated_at_ms"] or _mtime_ms(root),
+        fingerprint=fingerprint,
+    )
+
+
+def _parse_claude_jsonl(root: Path, session_id: str) -> dict[str, Any] | None:
+    seen_event = False
+    seen_matching_session = False
+    first_user: str | None = None
+    latest_assistant: str | None = None
+    first_timestamp_ms: int | None = None
+    latest_timestamp_ms: int | None = None
+    cwd: str | None = None
+
+    try:
+        lines = root.read_text(encoding="utf-8").splitlines()
+    except UnicodeDecodeError:
+        return None
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        event_type = _string(payload.get("type"))
+        if event_type in CLAUDE_EVENT_TYPES:
+            seen_event = True
+        payload_session_id = _string(payload.get("sessionId"))
+        if payload_session_id == session_id:
+            seen_matching_session = True
+        cwd = cwd or _string(payload.get("cwd"))
+        if timestamp_ms := _timestamp_ms(_string(payload.get("timestamp"))):
+            first_timestamp_ms = min(first_timestamp_ms or timestamp_ms, timestamp_ms)
+            latest_timestamp_ms = max(latest_timestamp_ms or 0, timestamp_ms)
+        role = _string((payload.get("message") or {}).get("role")) if isinstance(payload.get("message"), dict) else None
+        text = _message_text(payload.get("message"))
+        if role == "user" and text and first_user is None:
+            first_user = text
+        elif role == "assistant" and text:
+            latest_assistant = text
+    if not seen_event:
+        return None
+    if session_id and not seen_matching_session:
+        session_ids = {
+            _string(json.loads(line).get("sessionId"))
+            for line in lines
+            if line.strip() and line.lstrip().startswith("{")
+        }
+        if any(value for value in session_ids):
+            return None
+    return {
+        "cwd": cwd,
+        "name": _preview(first_user),
+        "latest_assistant_message": _preview(latest_assistant),
+        "created_at_ms": first_timestamp_ms,
+        "updated_at_ms": latest_timestamp_ms,
+    }
+
+
+def _message_text(message: Any) -> str | None:
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return None
+    parts: list[str] = []
+    for item in content:
+        if isinstance(item, dict) and isinstance(item.get("text"), str):
+            parts.append(item["text"])
+        elif isinstance(item, str):
+            parts.append(item)
+    return "\n".join(parts) if parts else None
+
+
+def _session_fingerprint(home: Path, root: Path) -> dict[str, Any] | None:
+    paths = _session_paths_for_root(home, root)
+    digest = hashlib.sha256()
+    root_digest = hashlib.sha256()
+    try:
+        with root.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                root_digest.update(chunk)
+        for path in paths:
+            if path.is_symlink():
+                continue
+            if path.is_dir():
+                continue
+            relative = path.relative_to(home).as_posix()
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0")
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            digest.update(b"\0")
+    except OSError:
+        return None
+    stat = root.stat()
+    return {
+        "root_sha256": root_digest.hexdigest(),
+        "root_size": stat.st_size,
+        "tree_sha256": digest.hexdigest(),
+        "updated_at_ms": _mtime_ms(root),
+    }
+
+
+def _session_paths(snapshot: ClaudeSessionSnapshot, home: Path) -> list[Path]:
+    return _session_paths_for_root(home, snapshot.root_path)
+
+
+def _session_paths_for_root(home: Path, root: Path) -> list[Path]:
+    session_id = root.stem
+    paths = [root]
+    project_session_dir = root.parent / session_id
+    for candidate in (
+        project_session_dir,
+        home / "session-env" / session_id,
+        home / "tasks" / session_id,
+        home / "file-history" / session_id,
+    ):
+        if candidate.exists():
+            paths.extend(_walk_copyable_paths(candidate))
+    return sorted(dict.fromkeys(paths), key=lambda item: item.as_posix())
+
+
+def _walk_copyable_paths(root: Path) -> list[Path]:
+    if root.is_symlink():
+        return []
+    if root.is_file():
+        return [] if root.name == ".lock" else [root]
+    paths = [root]
+    for path in root.rglob("*"):
+        if path.name == ".lock" or path.is_symlink():
+            continue
+        paths.append(path)
+    return paths
+
+
+def _copy_path(source: Path, target: Path, *, overwrite: bool) -> None:
+    if source.is_symlink():
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        if target.exists() and overwrite:
+            shutil.rmtree(target)
+        if not target.exists():
+            target.mkdir(parents=True, exist_ok=True)
+        return
+    if target.exists() and not overwrite:
+        return
+    shutil.copy2(source, target)
+
+
+def _copy_session_into_home(
+    *,
+    source_home: Path,
+    source_root: Path,
+    target_home: Path,
+    overwrite: bool,
+) -> None:
+    root_relative_path = source_root.relative_to(source_home)
+    session_id = source_root.stem
+    stage_root = (
+        target_home
+        / IMPORT_STAGING_DIR_NAME
+        / f"{session_id}-{uuid.uuid4()}"
+    )
+    staged_files = stage_root / "files"
+    try:
+        _stage_session_files(
+            source_home=source_home,
+            source_root=source_root,
+            staged_files=staged_files,
+        )
+        staged_snapshot = _read_session_snapshot(
+            staged_files,
+            staged_files / root_relative_path,
+            stability_delay_seconds=0,
+        )
+        if staged_snapshot is None:
+            raise ValueError(f"Staged Claude session is invalid: {session_id}")
+        _commit_staged_session(
+            staged_files=staged_files,
+            target_home=target_home,
+            root_relative_path=root_relative_path,
+            overwrite=overwrite,
+        )
+    except Exception:
+        shutil.rmtree(stage_root, ignore_errors=True)
+        _remove_empty_parent(stage_root.parent)
+        raise
+    shutil.rmtree(stage_root, ignore_errors=True)
+    _remove_empty_parent(stage_root.parent)
+
+
+def _stage_session_files(
+    *,
+    source_home: Path,
+    source_root: Path,
+    staged_files: Path,
+) -> None:
+    for source_path in _session_paths_for_root(source_home, source_root):
+        if source_path.is_symlink():
+            continue
+        relative = source_path.relative_to(source_home)
+        if relative.is_absolute() or ".." in relative.parts:
+            continue
+        target_path = staged_files / relative
+        _copy_path(source_path, target_path, overwrite=True)
+
+
+def _commit_staged_session(
+    *,
+    staged_files: Path,
+    target_home: Path,
+    root_relative_path: Path,
+    overwrite: bool,
+) -> None:
+    commit_relatives = _staged_session_commit_relatives(staged_files, root_relative_path)
+    backup_root = (
+        target_home
+        / IMPORT_BACKUP_DIR_NAME
+        / f"{root_relative_path.stem}-{uuid.uuid4()}"
+    )
+    moved_targets: list[tuple[Path, Path]] = []
+    moved_backups: list[tuple[Path, Path]] = []
+    try:
+        for relative in commit_relatives:
+            source_path = staged_files / relative
+            if not source_path.exists():
+                continue
+            target_path = target_home / relative
+            if target_path.exists() or target_path.is_symlink():
+                if not overwrite:
+                    continue
+                backup_path = backup_root / "files" / relative
+                backup_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(target_path), str(backup_path))
+                moved_backups.append((target_path, backup_path))
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source_path), str(target_path))
+            moved_targets.append((target_path, relative))
+    except Exception:
+        _restore_failed_session_commit(
+            moved_targets=moved_targets,
+            moved_backups=moved_backups,
+            failed_root=backup_root / "failed",
+        )
+        raise
+    shutil.rmtree(backup_root, ignore_errors=True)
+
+
+def _staged_session_commit_relatives(
+    staged_files: Path,
+    root_relative_path: Path,
+) -> list[Path]:
+    session_id = root_relative_path.stem
+    candidates = [
+        root_relative_path.parent / session_id,
+        Path("session-env") / session_id,
+        Path("tasks") / session_id,
+        Path("file-history") / session_id,
+    ]
+    existing = [relative for relative in candidates if (staged_files / relative).exists()]
+    existing.append(root_relative_path)
+    return existing
+
+
+def _restore_failed_session_commit(
+    *,
+    moved_targets: list[tuple[Path, Path]],
+    moved_backups: list[tuple[Path, Path]],
+    failed_root: Path,
+) -> None:
+    for target_path, relative in reversed(moved_targets):
+        if not target_path.exists() and not target_path.is_symlink():
+            continue
+        failed_path = failed_root / relative
+        failed_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(target_path), str(failed_path))
+    for target_path, backup_path in reversed(moved_backups):
+        if not backup_path.exists() or target_path.exists() or target_path.is_symlink():
+            continue
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(backup_path), str(target_path))
+
+
+def _remove_empty_parent(path: Path) -> None:
+    try:
+        path.rmdir()
+    except OSError:
+        return
+
+
+def _write_device_snapshot(
+    *,
+    exchange_dir: Path,
+    identity: DeviceIdentity,
+    openbase_home: Path,
+    snapshot: ClaudeSessionSnapshot,
+    fingerprint_id: str,
+    parent_fingerprint: str | None,
+) -> Path:
+    target_dir = (
+        exchange_dir
+        / "devices"
+        / identity.device_id
+        / "snapshots"
+        / snapshot.session_id
+        / fingerprint_id
+    )
+    if target_dir.exists():
+        return target_dir
+    tmp_dir = target_dir.parent / f".tmp-{fingerprint_id}-{uuid.uuid4()}"
+    files_dir = tmp_dir / "files"
+    tmp_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        copied_files: list[str] = []
+        for source_path in _session_paths(snapshot, openbase_home):
+            relative = source_path.relative_to(openbase_home)
+            target_path = files_dir / relative
+            if source_path.is_dir():
+                target_path.mkdir(parents=True, exist_ok=True)
+                continue
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            _copy_path(source_path, target_path, overwrite=True)
+            copied_files.append(relative.as_posix())
+        metadata = _device_snapshot_metadata(
+            identity=identity,
+            snapshot=snapshot,
+            fingerprint_id=fingerprint_id,
+            parent_fingerprint=parent_fingerprint,
+            copied_files=copied_files,
+        )
+        (tmp_dir / "metadata.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp_dir, target_dir)
+    except Exception:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+    return target_dir
+
+
+def _device_snapshot_metadata(
+    *,
+    identity: DeviceIdentity,
+    snapshot: ClaudeSessionSnapshot,
+    fingerprint_id: str,
+    parent_fingerprint: str | None,
+    copied_files: list[str],
+) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "source_device_id": identity.device_id,
+        "source_device_name": identity.device_name,
+        "session_id": snapshot.session_id,
+        "fingerprint": fingerprint_id,
+        "parent_fingerprint": parent_fingerprint,
+        "exported_at": time.time(),
+        "root_relative_path": snapshot.relative_root.as_posix(),
+        "project_key": snapshot.project_key,
+        "cwd": snapshot.cwd,
+        "name": snapshot.name,
+        "latest_assistant_message": snapshot.latest_assistant_message,
+        "root_sha256": snapshot.fingerprint["root_sha256"],
+        "root_size": snapshot.fingerprint["root_size"],
+        "tree_sha256": snapshot.fingerprint["tree_sha256"],
+        "files": copied_files,
+    }
+
+
+def _read_device_snapshot_metadata(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise ValueError("metadata_not_found")
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("metadata_malformed") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata_malformed")
+    if metadata.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError("unsupported_schema")
+    for key in (
+        "source_device_id",
+        "session_id",
+        "fingerprint",
+        "root_relative_path",
+        "root_sha256",
+        "tree_sha256",
+    ):
+        if not _string(metadata.get(key)):
+            raise ValueError(f"metadata_missing_{key}")
+    root_relative_path = Path(str(metadata["root_relative_path"]))
+    if root_relative_path.is_absolute() or ".." in root_relative_path.parts:
+        raise ValueError("metadata_invalid_root_relative_path")
+    return metadata
+
+
+def _validate_device_snapshot(snapshot_dir: Path, metadata: dict[str, Any]) -> str | None:
+    files_dir = snapshot_dir / "files"
+    root_relative_path = Path(str(metadata["root_relative_path"]))
+    snapshot = _read_session_snapshot(
+        files_dir,
+        files_dir / root_relative_path,
+        stability_delay_seconds=0,
+    )
+    if snapshot is None:
+        return "session_not_found"
+    if snapshot.fingerprint["root_sha256"] != metadata.get("root_sha256"):
+        return "root_hash_mismatch"
+    if snapshot.fingerprint["root_size"] != metadata.get("root_size"):
+        return "root_size_mismatch"
+    if snapshot.fingerprint["tree_sha256"] != metadata.get("tree_sha256"):
+        return "tree_hash_mismatch"
+    return None
+
+
+def _import_device_snapshot_into_home(
+    *,
+    snapshot_dir: Path,
+    metadata: dict[str, Any],
+    openbase_home: Path,
+    overwrite: bool,
+) -> None:
+    files_dir = snapshot_dir / "files"
+    root_relative_path = Path(str(metadata["root_relative_path"]))
+    session_id = str(metadata["session_id"])
+    source_root = files_dir / root_relative_path
+    _copy_session_into_home(
+        source_home=files_dir,
+        source_root=source_root,
+        target_home=openbase_home,
+        overwrite=overwrite,
+    )
+    if not (openbase_home / root_relative_path).exists():
+        raise FileNotFoundError(f"Imported Claude session root missing: {session_id}")
+
+
+def _device_snapshot_dirs(exchange_dir: Path) -> list[Path]:
+    root = exchange_dir / "devices"
+    if not root.exists():
+        return []
+    return sorted(
+        path
+        for path in root.glob("*/snapshots/*/*")
+        if path.is_dir() and (path / "metadata.json").exists()
+    )
+
+
+def _device_import_decision(
+    *,
+    local_snapshot: ClaudeSessionSnapshot | None,
+    local_fingerprint: str | None,
+    incoming_fingerprint: str,
+    parent_fingerprint: str | None,
+    session_ledger: dict[str, Any],
+) -> str:
+    return import_snapshot_decision(
+        has_local=local_snapshot is not None,
+        local_fingerprint=local_fingerprint,
+        incoming_fingerprint=incoming_fingerprint,
+        parent_fingerprint=parent_fingerprint,
+        entry_ledger=session_ledger,
+    )
+
+
+def _parent_fingerprint_for_device_export(
+    session_ledger: dict[str, Any],
+    fingerprint_id: str,
+) -> str | None:
+    return parent_fingerprint_for_export(session_ledger, fingerprint_id)
+
+
+def _fingerprint_id(fingerprint: dict[str, Any] | None) -> str:
+    value = _string(fingerprint.get("tree_sha256")) if fingerprint else None
+    if not value:
+        raise ValueError("fingerprint_missing_tree_sha256")
+    return value
+
+
+def _target_root_path(source_root: Path, source_home: Path, target_home: Path) -> Path:
+    return target_home / source_root.relative_to(source_home)
+
+
+def _backfill_openbase_session_metadata(
+    snapshot: ClaudeSessionSnapshot,
+    *,
+    db_path: Path | None,
+) -> None:
+    resolved_db = db_path or _super_agents_db_path()
+    resolved_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(resolved_db) as conn:
+        _ensure_super_agents_schema(conn)
+        existing = conn.execute(
+            "select * from sessions where backend_session_id = ?",
+            (snapshot.session_id,),
+        ).fetchone()
+        if existing is None:
+            session_id = f"claude_{snapshot.session_id.replace('-', '')}"
+            name = _unique_session_name(conn, snapshot.name)
+            created_at = _iso_from_ms(snapshot.created_at_ms) or _iso_now()
+            updated_at = _iso_from_ms(snapshot.updated_at_ms) or created_at
+            conn.execute(
+                """
+                insert into sessions (
+                    id, name, cwd, command_json, status, last_observed_state,
+                    last_useful_message, backend_session_id, log_path,
+                    raw_log_path, created_at, updated_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    name,
+                    snapshot.cwd or str(Path.home()),
+                    json.dumps(["claude", "--resume", snapshot.session_id]),
+                    "waiting",
+                    _session_observed_state(snapshot),
+                    snapshot.latest_assistant_message,
+                    snapshot.session_id,
+                    None,
+                    None,
+                    created_at,
+                    updated_at,
+                ),
+            )
+            return
+        updates: dict[str, Any] = {}
+        if (
+            snapshot.latest_assistant_message
+            and existing["last_useful_message"] != snapshot.latest_assistant_message
+        ):
+            updates["last_useful_message"] = snapshot.latest_assistant_message
+        if not existing["cwd"] and snapshot.cwd:
+            updates["cwd"] = snapshot.cwd
+        if _should_refresh_observed_state(existing["last_observed_state"]):
+            updates["last_observed_state"] = _session_observed_state(snapshot)
+        if not updates:
+            return
+        updates["updated_at"] = _iso_from_ms(snapshot.updated_at_ms) or _iso_now()
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        conn.execute(
+            f"update sessions set {assignments} where id = ?",
+            [*updates.values(), existing["id"]],
+        )
+
+
+def _ensure_super_agents_schema(conn: sqlite3.Connection) -> None:
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        create table if not exists sessions (
+            id text primary key,
+            name text not null unique,
+            agent_name text,
+            developer_instructions text,
+            cwd text not null,
+            command_json text not null,
+            model text,
+            status text not null,
+            pid integer,
+            active_turn_id text,
+            last_turn_id text,
+            last_observed_state text,
+            last_useful_message text,
+            backend_session_id text,
+            last_exit_code integer,
+            log_path text,
+            raw_log_path text,
+            created_at text not null,
+            updated_at text not null
+        );
+        create table if not exists turns (
+            id text primary key,
+            session_id text not null references sessions(id) on delete cascade,
+            prompt text not null,
+            mode text,
+            model text,
+            reasoning_effort text,
+            status text not null,
+            attempts integer not null default 0,
+            last_error text,
+            last_useful_message text,
+            created_at text not null,
+            updated_at text not null,
+            finished_at text
+        );
+        create index if not exists turns_session_idx on turns(session_id, created_at);
+        """
+    )
+    session_columns = {
+        row["name"] for row in conn.execute("pragma table_info(sessions)").fetchall()
+    }
+    session_defaults = {
+        "agent_name": "text",
+        "developer_instructions": "text",
+        "model": "text",
+        "pid": "integer",
+        "active_turn_id": "text",
+        "last_turn_id": "text",
+        "last_observed_state": "text",
+        "last_useful_message": "text",
+        "backend_session_id": "text",
+        "last_exit_code": "integer",
+        "log_path": "text",
+        "raw_log_path": "text",
+    }
+    for column, column_type in session_defaults.items():
+        if column not in session_columns:
+            conn.execute(f"alter table sessions add column {column} {column_type}")
+    turn_columns = {
+        row["name"] for row in conn.execute("pragma table_info(turns)").fetchall()
+    }
+    turn_defaults = {
+        "mode": "text",
+        "model": "text",
+        "reasoning_effort": "text",
+        "attempts": "integer not null default 0",
+        "last_error": "text",
+        "last_useful_message": "text",
+        "finished_at": "text",
+    }
+    for column, column_type in turn_defaults.items():
+        if column not in turn_columns:
+            conn.execute(f"alter table turns add column {column} {column_type}")
+
+
+def _active_claude_session_ids(db_path: Path | None = None) -> set[str]:
+    active: set[str] = set()
+    resolved_db = db_path or _super_agents_db_path()
+    if resolved_db.exists():
+        with sqlite3.connect(resolved_db) as conn:
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = conn.execute(
+                    """
+                    select backend_session_id from sessions
+                    where backend_session_id is not null
+                    and (status = 'running' or active_turn_id is not null)
+                    """
+                ).fetchall()
+            except sqlite3.Error:
+                rows = []
+        active.update(row["backend_session_id"] for row in rows if row["backend_session_id"])
+    active.update(_active_claude_session_ids_from_legacy_state())
+    return active
+
+
+def _active_claude_session_ids_from_legacy_state(
+    state_path: Path = DEFAULT_LEGACY_SUPER_AGENTS_STATE_PATH,
+) -> set[str]:
+    if not state_path.exists():
+        return set()
+    try:
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return set()
+    sessions = raw.get("sessions") if isinstance(raw, dict) else None
+    if not isinstance(sessions, dict):
+        return set()
+    active: set[str] = set()
+    for value in sessions.values():
+        if not isinstance(value, dict):
+            continue
+        status = value.get("status") or value.get("lastStatus")
+        active_turn = value.get("activeTurnId") or value.get("active_turn_id")
+        backend_session_id = _string(
+            value.get("backendSessionId") or value.get("backend_session_id")
+        )
+        if backend_session_id and (status == "running" or active_turn):
+            active.add(backend_session_id)
+    return active
+
+
+def _super_agents_db_path() -> Path:
+    configured = os.environ.get(SUPER_AGENTS_CLAUDE_CODE_HOME_ENV)
+    home = Path(configured).expanduser() if configured else DEFAULT_SUPER_AGENTS_CLAUDE_CODE_HOME
+    return home / "state.sqlite3"
+
+
+def _unique_session_name(conn: sqlite3.Connection, base_name: str) -> str:
+    name = _preview(base_name, limit=80) or "Claude Code session"
+    candidate = name
+    suffix = 2
+    while conn.execute("select 1 from sessions where name = ?", (candidate,)).fetchone():
+        suffix_text = f" ({suffix})"
+        candidate = f"{name[: 80 - len(suffix_text)]}{suffix_text}"
+        suffix += 1
+    return candidate
+
+
+def _session_observed_state(snapshot: ClaudeSessionSnapshot) -> str:
+    payload = {
+        "source": "claude_thread_sync",
+        "backend": "claude_code",
+        "backend_session_id": snapshot.session_id,
+        "project_key": snapshot.project_key,
+        "root_relative_path": snapshot.relative_root.as_posix(),
+        "cwd": snapshot.cwd,
+        "root_sha256": snapshot.fingerprint.get("root_sha256"),
+        "tree_sha256": snapshot.fingerprint.get("tree_sha256"),
+        "created_at": _iso_from_ms(snapshot.created_at_ms),
+        "updated_at": _iso_from_ms(snapshot.updated_at_ms),
+        "observed_at": _iso_now(),
+    }
+    return json.dumps(payload, sort_keys=True)
+
+
+def _should_refresh_observed_state(value: str | None) -> bool:
+    if not value:
+        return True
+    if value == "Claude Code session imported by thread sync":
+        return True
+    try:
+        raw = json.loads(value)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(raw, dict) and raw.get("source") == "claude_thread_sync"
+
+
+def _read_sync_ledger(path: Path) -> dict[str, Any]:
+    return read_scoped_ledger(
+        path,
+        scope_key="sessions",
+        logger=logger,
+        malformed_event="claude_thread_sync event=ledger_malformed",
+    )
+
+
+def _write_sync_ledger(path: Path, ledger: dict[str, Any]) -> None:
+    write_scoped_ledger(path, scope_key="sessions", ledger=ledger)
+
+
+def _read_device_ledger(path: Path) -> dict[str, Any]:
+    return read_device_ledger(
+        path,
+        scope_key="sessions",
+        logger=logger,
+        malformed_event="claude_thread_device_sync event=ledger_malformed",
+    )
+
+
+def _write_device_ledger(path: Path, ledger: dict[str, Any]) -> None:
+    write_json_atomic(path, ledger)
+
+
+def _device_ledger_session(ledger: dict[str, Any], session_id: str) -> dict[str, Any]:
+    return device_ledger_entry(ledger, scope_key="sessions", entity_id=session_id)
+
+
+def _device_exported_fingerprints(
+    session_ledger: dict[str, Any],
+    device_id: str,
+) -> set[str]:
+    return device_exported_fingerprints(session_ledger, device_id)
+
+
+def _snapshot_already_imported(
+    session_ledger: dict[str, Any],
+    device_id: str,
+    fingerprint_id: str,
+) -> bool:
+    return snapshot_already_imported(
+        session_ledger,
+        device_id=device_id,
+        fingerprint_id=fingerprint_id,
+    )
+
+
+def _record_device_snapshot(
+    session_ledger: dict[str, Any],
+    *,
+    device_id: str,
+    fingerprint_id: str,
+    snapshot_path: Path,
+    status: str,
+) -> None:
+    record_device_snapshot(
+        session_ledger,
+        device_id=device_id,
+        fingerprint_id=fingerprint_id,
+        snapshot_path=snapshot_path,
+        status=status,
+    )
+
+
+def _record_device_conflict(
+    session_ledger: dict[str, Any],
+    *,
+    local_fingerprint: str | None,
+    incoming_fingerprint: str,
+    source_device_id: str,
+    snapshot_path: Path,
+    reason: str,
+) -> None:
+    record_device_conflict(
+        session_ledger,
+        local_fingerprint=local_fingerprint,
+        incoming_fingerprint=incoming_fingerprint,
+        source_device_id=source_device_id,
+        snapshot_path=snapshot_path,
+        reason=reason,
+    )
+
+
+def _record_synced_pair(
+    ledger: dict[str, Any],
+    session_id: str,
+    normal_fingerprint: dict[str, Any],
+    openbase_fingerprint: dict[str, Any],
+    reason: str,
+) -> None:
+    record_synced_pair(
+        ledger,
+        entity_key="session_id",
+        entity_id=session_id,
+        left_key="normal",
+        left_fingerprint=normal_fingerprint,
+        right_key="openbase",
+        right_fingerprint=openbase_fingerprint,
+        reason=reason,
+    )
+
+
+def _record_conflict(
+    ledger: dict[str, Any],
+    session_id: str,
+    normal_fingerprint: dict[str, Any],
+    openbase_fingerprint: dict[str, Any],
+    reason: str,
+) -> None:
+    record_sync_conflict(
+        ledger,
+        entity_key="session_id",
+        entity_id=session_id,
+        left_key="normal",
+        left_fingerprint=normal_fingerprint,
+        right_key="openbase",
+        right_fingerprint=openbase_fingerprint,
+        reason=reason,
+    )
+
+
+def _same_fingerprint(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    return left.get("tree_sha256") == right.get("tree_sha256")
+
+
+def _fingerprint_matches(value: Any, fingerprint: dict[str, Any]) -> bool:
+    return fingerprint_matches(
+        value,
+        fingerprint,
+        keys=("root_sha256", "root_size", "tree_sha256"),
+    )
+
+
+def _session_ids_by_updated_at(
+    normal_sessions: dict[str, ClaudeSessionSnapshot],
+    openbase_sessions: dict[str, ClaudeSessionSnapshot],
+) -> list[str]:
+    def updated_at(session_id: str) -> int:
+        values = []
+        for sessions in (normal_sessions, openbase_sessions):
+            snapshot = sessions.get(session_id)
+            if snapshot:
+                values.append(snapshot.updated_at_ms)
+        return max(values or [0])
+
+    return sorted(
+        set(normal_sessions) | set(openbase_sessions),
+        key=updated_at,
+        reverse=True,
+    )
+
+
+def _latest_updated_ms(*snapshots: ClaudeSessionSnapshot | None) -> int:
+    return max((snapshot.updated_at_ms for snapshot in snapshots if snapshot), default=0)
+
+
+def _sync_cutoff_ms(max_age_days: int | None) -> int | None:
+    if max_age_days is None:
+        return None
+    return int((time.time() - max(max_age_days, 0) * 24 * 60 * 60) * 1000)
+
+
+def _path_stable(path: Path, delay_seconds: float) -> bool:
+    before = path.stat()
+    if delay_seconds > 0:
+        time.sleep(delay_seconds)
+    after = path.stat()
+    return before.st_size == after.st_size and before.st_mtime_ns == after.st_mtime_ns
+
+
+def _timestamp_ms(value: str | None) -> int | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return int(parsed.timestamp() * 1000)
+
+
+def _mtime_ms(path: Path) -> int:
+    return int(path.stat().st_mtime * 1000)
+
+
+def _preview(text: str | None, limit: int = 180) -> str | None:
+    if text is None:
+        return None
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1] + "..."
+
+
+def _decode_project_key(value: str) -> str | None:
+    if not value.startswith("-"):
+        return None
+    return "/" + value[1:].replace("-", "/")
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _iso_from_ms(value: int | None) -> str | None:
+    if value is None:
+        return None
+    return datetime.fromtimestamp(value / 1000, timezone.utc).isoformat(
+        timespec="milliseconds"
+    ).replace("+00:00", "Z")
+
+
+def _log_sync_result(result: ClaudeThreadSyncResult) -> None:
+    if result.status not in {"transferred", "conflict", "error"}:
+        return
+    message = (
+        "claude_thread_sync event=%s session_id=%s direction=%s reason=%s "
+        "source=%s target=%s"
+    )
+    args = (
+        result.status,
+        result.session_id,
+        result.direction,
+        result.reason,
+        result.source_path,
+        result.target_path,
+    )
+    if result.status == "conflict":
+        logger.warning(message, *args)
+    elif result.status == "error":
+        logger.error(message, *args)
+    else:
+        logger.info(message, *args)

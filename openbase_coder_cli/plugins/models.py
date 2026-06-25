@@ -22,9 +22,12 @@ class ConsolePageSpec:
     key: str
     title: str
     route: str
-    import_module: str
+    import_module: str = ""
     export: str = "default"
     sidebar: bool = True
+    render: str = "component"
+    asset_dir: str = ""
+    entrypoint: str = "index.html"
 
 
 @dataclass

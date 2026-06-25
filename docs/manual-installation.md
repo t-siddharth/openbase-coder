@@ -21,10 +21,11 @@ the output in the app. The manual setup path is the same underlying operation,
 but you run each command yourself from a terminal so you can inspect what will
 happen and stop at any point.
 
-The default setup command is:
+The default setup path is:
 
 ```bash
-uvx --python 3.13 --refresh-package openbase-coder --from openbase-coder openbase-coder setup
+curl -fsSL https://github.com/openbase-community/openbase-coder/releases/latest/download/install.sh | sh
+openbase-coder setup
 ```
 
 If your desktop app shows a pinned setup command, prefer the exact command shown
@@ -32,16 +33,19 @@ there because it may include app-selected options such as the coding backend.
 
 ## Install Prerequisites
 
-Install the tools the setup command expects:
+Install Tailscale before continuing if you want iPhone-to-Mac voice networking:
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-brew install git node livekit
 open https://tailscale.com/download/mac
 ```
 
-Install the Tailscale macOS app from the download page, then open it and sign
-in before continuing if you want iPhone-to-Mac voice networking.
+The standalone CLI installer bundles Python, Openbase Coder dependencies, the
+console build, and LiveKit server. Source-development setup still needs `uv`,
+Git, Node, and workspace tooling.
+
+If you want fully local Kokoro/MLX audio, run setup with
+`--audio-provider local`; setup installs the optional local-audio packages into
+the bundled Python runtime and downloads the required models.
 
 ## Run Setup Yourself
 
@@ -53,16 +57,15 @@ export ASSEMBLY_AI_API_KEY="<assemblyai-api-key>"
 export CARTESIA_API_KEY="<cartesia-api-key>"
 ```
 
-Then run the pinned desktop-app command or the default published CLI command:
+Then run the pinned desktop-app command or the default standalone setup path:
 
 ```bash
-uvx --python 3.13 --refresh-package openbase-coder --from openbase-coder openbase-coder setup
+openbase-coder setup
 ```
 
-The setup command creates the Openbase workspace, writes
-`~/.openbase/installation.json`, creates `~/.openbase/.env` if it is missing,
-builds the console, installs background services, and configures Tailscale Serve
-routes.
+The setup command writes `~/.openbase/installation.json`, creates
+`~/.openbase/.env` if it is missing, uses the bundled console, installs
+background services, and configures Tailscale Serve routes.
 
 If `~/.openbase/.env` already existed before setup, the CLI leaves it unchanged.
 Add the voice keys manually:
@@ -80,15 +83,7 @@ CARTESIA_API_KEY=<cartesia-api-key>
 
 ## Authenticate
 
-Run the CLI login flow from your terminal. If you used the `uvx` command above
-and have not installed a persistent `openbase-coder` command, run the login
-through `uvx` too:
-
-```bash
-uvx --python 3.13 openbase-coder login
-```
-
-With a persistent install, this shorter command is equivalent:
+Run the CLI login flow from your terminal:
 
 ```bash
 openbase-coder login
@@ -99,8 +94,7 @@ to show until login writes an access token or refresh token there.
 
 ## Start and Verify Services
 
-Start the managed services. Use the `uvx --python 3.13 openbase-coder ...` form
-instead if you do not have a persistent install:
+Start the managed services:
 
 ```bash
 openbase-coder services start

@@ -13,7 +13,12 @@ from rest_framework import serializers, status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from openbase_coder_cli.mcp.thread_exchange import thread_snapshot_status
+from openbase_coder_cli.mcp.thread_exchange import (
+    ThreadConflictResolutionError,
+    resolve_thread_snapshot_conflict,
+    thread_snapshot_conflicts_payload,
+    thread_snapshot_status,
+)
 from openbase_coder_cli.openbase_coder_cli_app.common import _auth_debug_value
 from openbase_coder_cli.services.console_settings import (
     get_ignored_launchctl_labels,
@@ -51,6 +56,12 @@ class OpenbaseRestartSerializer(serializers.Serializer):
         allow_null=True,
     )
     recreate_dispatcher = serializers.BooleanField(required=False, default=False)
+
+
+class ThreadSyncConflictResolutionSerializer(serializers.Serializer):
+    action = serializers.ChoiceField(
+        choices=["accept_local", "accept_remote_latest"],
+    )
 
 
 class IgnoredLaunchctlLabelsSerializer(serializers.Serializer):
@@ -107,6 +118,31 @@ def openbase_services_list(request):
 def thread_device_sync_status(request):
     """Show cross-device Codex thread snapshot sync status."""
     return Response(thread_snapshot_status())
+
+
+@api_view(["GET"])
+def thread_device_sync_conflicts(request):
+    """Show unresolved cross-device Codex thread snapshot sync conflicts."""
+    return Response(thread_snapshot_conflicts_payload())
+
+
+@api_view(["POST"])
+def thread_device_sync_conflict_resolve(request, thread_id):
+    """Resolve one cross-device Codex thread snapshot sync conflict."""
+    serializer = ThreadSyncConflictResolutionSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    try:
+        return Response(
+            resolve_thread_snapshot_conflict(
+                thread_id,
+                action=serializer.validated_data["action"],
+            )
+        )
+    except ThreadConflictResolutionError as exc:
+        return Response(
+            {"error": str(exc)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
 
 @api_view(["POST"])

@@ -106,10 +106,24 @@ def normalize_capabilities(raw_spec: dict, plugin_id: str) -> PluginCapabilities
             raise click.ClickException(
                 f"console page '{key}' route must start with '/dashboard'"
             )
-        import_module = _as_string(
-            item.get("import_module", ""),
-            field_name=f"console_page[{key}].import_module",
+        render = str(item.get("render", "")).strip() or (
+            "iframe" if item.get("asset_dir") else "component"
         )
+        if render not in {"component", "iframe"}:
+            raise click.ClickException(
+                f"console page '{key}' render must be 'component' or 'iframe'"
+            )
+        import_module = str(item.get("import_module", "")).strip()
+        asset_dir = str(item.get("asset_dir", "")).strip()
+        entrypoint = str(item.get("entrypoint", "index.html")).strip() or "index.html"
+        if render == "component" and not import_module:
+            raise click.ClickException(
+                f"console page '{key}' must declare import_module for component rendering"
+            )
+        if render == "iframe" and not asset_dir:
+            raise click.ClickException(
+                f"console page '{key}' must declare asset_dir for iframe rendering"
+            )
         export_name = str(item.get("export", "default")).strip() or "default"
         sidebar = bool(item.get("sidebar", True))
         console_pages.append(
@@ -120,6 +134,9 @@ def normalize_capabilities(raw_spec: dict, plugin_id: str) -> PluginCapabilities
                 import_module=import_module,
                 export=export_name,
                 sidebar=sidebar,
+                render=render,
+                asset_dir=asset_dir,
+                entrypoint=entrypoint,
             )
         )
 

@@ -68,7 +68,8 @@ def test_livekit_agent_service_does_not_export_dispatcher_instructions_path():
     service = next(svc for svc in SERVICES if svc.name == "livekit-agent")
     command = service.command_template.format(
         data_dir="/tmp/openbase",
-        uv="/usr/local/bin/uv",
+        python="/opt/openbase/python/bin/python",
+        runtime_workdir="/opt/openbase",
         workspace="/tmp/workspace",
     )
 
@@ -77,9 +78,10 @@ def test_livekit_agent_service_does_not_export_dispatcher_instructions_path():
     assert 'export LIVEKIT_URL="${LIVEKIT_URL:-ws://localhost:7880}"' in command
     assert "LIVEKIT_DISPATCHER_INSTRUCTIONS_PATH" not in command
     assert (
-        "exec /usr/local/bin/uv run python -m openbase_coder_cli.livekit_agent.livekit start"
+        "exec /opt/openbase/python/bin/python -m openbase_coder_cli.livekit_agent.livekit start"
         in command
     )
+    assert service.workdir_template == "{runtime_workdir}"
 
 
 def test_django_service_uses_livekit_network_mode_for_room_url():
@@ -145,6 +147,55 @@ def test_codex_thread_device_sync_service_is_optional_service():
     )
     assert (
         'exec /usr/local/bin/openbase-coder codex-sync devices run --interval "$CODEX_THREAD_DEVICE_SYNC_INTERVAL" --max-age-days "$CODEX_THREAD_DEVICE_SYNC_MAX_AGE_DAYS" --exchange-dir "$CODEX_THREAD_DEVICE_SYNC_EXCHANGE_DIR"'
+        in command
+    )
+
+
+def test_claude_thread_sync_service_is_auto_installed_service():
+    service = next(svc for svc in SERVICES if svc.name == "claude-thread-sync")
+    command = service.command_template.format(
+        openbase_coder="/usr/local/bin/openbase-coder",
+        data_dir="/tmp/openbase",
+        workspace="/tmp/workspace",
+    )
+
+    assert service.workdir_template == "{data_dir}"
+    assert service.install_by_default is True
+    assert 'CLAUDE_THREAD_SYNC_INTERVAL="${CLAUDE_THREAD_SYNC_INTERVAL:-60}"' in command
+    assert (
+        'CLAUDE_THREAD_SYNC_MAX_AGE_DAYS="${CLAUDE_THREAD_SYNC_MAX_AGE_DAYS:-15}"'
+        in command
+    )
+    assert (
+        'exec /usr/local/bin/openbase-coder claude-sync run --interval "$CLAUDE_THREAD_SYNC_INTERVAL" --max-age-days "$CLAUDE_THREAD_SYNC_MAX_AGE_DAYS"'
+        in command
+    )
+
+
+def test_claude_thread_device_sync_service_is_optional_service():
+    service = next(svc for svc in SERVICES if svc.name == "claude-thread-device-sync")
+    command = service.command_template.format(
+        openbase_coder="/usr/local/bin/openbase-coder",
+        data_dir="/tmp/openbase",
+        workspace="/tmp/workspace",
+    )
+
+    assert service.workdir_template == "{data_dir}"
+    assert service.install_by_default is False
+    assert (
+        'CLAUDE_THREAD_DEVICE_SYNC_INTERVAL="${CLAUDE_THREAD_DEVICE_SYNC_INTERVAL:-60}"'
+        in command
+    )
+    assert (
+        'CLAUDE_THREAD_DEVICE_SYNC_MAX_AGE_DAYS="${CLAUDE_THREAD_DEVICE_SYNC_MAX_AGE_DAYS:-15}"'
+        in command
+    )
+    assert (
+        'CLAUDE_THREAD_DEVICE_SYNC_EXCHANGE_DIR="${CLAUDE_THREAD_DEVICE_SYNC_EXCHANGE_DIR:-/tmp/openbase/claude-thread-sync}"'
+        in command
+    )
+    assert (
+        'exec /usr/local/bin/openbase-coder claude-sync devices run --interval "$CLAUDE_THREAD_DEVICE_SYNC_INTERVAL" --max-age-days "$CLAUDE_THREAD_DEVICE_SYNC_MAX_AGE_DAYS" --exchange-dir "$CLAUDE_THREAD_DEVICE_SYNC_EXCHANGE_DIR"'
         in command
     )
 

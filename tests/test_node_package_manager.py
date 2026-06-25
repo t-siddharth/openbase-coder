@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from openbase_coder_cli.cli import node
 
 
@@ -107,6 +109,26 @@ def test_run_workspace_package_command_finds_pnpm_home_when_not_on_path(
         "--no-lockfile",
         "--shamefully-hoist",
     ]
+
+
+def test_run_workspace_package_command_requires_pnpm_for_workspace(
+    monkeypatch,
+    tmp_path: Path,
+):
+    workspace_dir = tmp_path / "workspace"
+    package_dir = workspace_dir / "console"
+    package_dir.mkdir(parents=True)
+    (workspace_dir / "pnpm-workspace.yaml").write_text("packages:\n  - console\n")
+    (package_dir / "package.json").write_text("{}")
+
+    monkeypatch.setattr(
+        node,
+        "_which_node_binary",
+        lambda name: "/bin/npm" if name == "npm" else None,
+    )
+
+    with pytest.raises(node.click.ClickException, match="pnpm is required"):
+        node.run_workspace_package_command(workspace_dir, package_dir, "install")
 
 
 def test_run_workspace_package_command_allows_pnpm_install_without_lockfile(

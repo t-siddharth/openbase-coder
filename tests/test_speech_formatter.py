@@ -143,6 +143,57 @@ Exception: nope"""
     assert format_for_speech(text) == "Technical output omitted, shown on screen."
 
 
+def test_formatter_speaks_plain_short_voice_status_replies():
+    assert format_for_speech("Screen share is on.") == "Screen share is on."
+    assert format_for_speech("Screen share is off.") == "Screen share is off."
+
+
+def test_formatter_speaks_plain_explanations_about_technical_terms():
+    text = (
+        "The approval popup appears when a tool call needs permission, "
+        "so you can approve it."
+    )
+
+    assert (
+        format_for_speech(text)
+        == "The approval popup appears when a tool call needs permission, so you can approve it."
+    )
+
+
+def test_formatter_speaks_plain_explanations_with_internal_marker_names():
+    text = (
+        "The approval popup is probably caused by sandbox_permissions "
+        "on an exec_command call."
+    )
+
+    assert (
+        format_for_speech(text)
+        == "The approval popup is probably caused by sandbox permissions on an exec command call."
+    )
+
+
+def test_formatter_speaks_plain_reply_about_technical_output_bug():
+    text = (
+        "I think the bug is that a normal response mentioning a tool call "
+        "is being treated as technical output."
+    )
+
+    assert (
+        format_for_speech(text)
+        == "I think the bug is that a normal response mentioning a tool call is being treated as technical output."
+    )
+
+
+def test_formatter_still_omits_structured_tool_and_json_output():
+    assert (
+        format_for_speech('tool call: {"name": "exec_command", "arguments": {}}')
+        == "Technical output omitted, shown on screen."
+    )
+    assert format_for_speech('{"status": "ok", "items": []}') == (
+        "Technical output omitted, shown on screen."
+    )
+
+
 def test_formatter_truncates_after_speech_formatting():
     text = "- First API item.\n- Second TTS item.\n- Third STT item."
 

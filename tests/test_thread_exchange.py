@@ -8,6 +8,8 @@ from openbase_coder_cli.mcp.thread_exchange import (
     export_thread_snapshots,
     get_or_create_device_identity,
     import_thread_snapshots,
+    resolve_thread_snapshot_conflict,
+    thread_snapshot_conflicts_payload,
     thread_snapshot_status,
 )
 
@@ -320,3 +322,131 @@ def test_import_snapshot_detects_divergent_local_thread(tmp_path: Path) -> None:
         ledger_path=target_ledger,
     )
     assert status["conflict_count"] == 1
+
+
+def test_resolve_conflict_accept_remote_latest_overwrites_local_thread(
+    tmp_path: Path,
+) -> None:
+    source_home = tmp_path / "source"
+    target_home = tmp_path / "target"
+    exchange_dir = tmp_path / "exchange"
+    target_ledger = tmp_path / "target-ledger.json"
+    source_device = tmp_path / "source-device.json"
+    target_device = tmp_path / "target-device.json"
+    _create_state_db(source_home / "state_5.sqlite")
+    _create_state_db(target_home / "state_5.sqlite")
+    _insert_thread(
+        source_home,
+        "thread-1",
+        title="Remote title",
+        updated_at=20,
+        terminal_message="remote done",
+    )
+    _insert_thread(
+        target_home,
+        "thread-1",
+        title="Local title",
+        updated_at=30,
+        terminal_message="local done",
+    )
+    export_thread_snapshots(
+        codex_home=source_home,
+        exchange_dir=exchange_dir,
+        device_identity_path=source_device,
+        ledger_path=tmp_path / "source-ledger.json",
+        stability_delay_seconds=0,
+        max_age_days=None,
+    )
+    import_thread_snapshots(
+        codex_home=target_home,
+        exchange_dir=exchange_dir,
+        device_identity_path=target_device,
+        ledger_path=target_ledger,
+    )
+
+    result = resolve_thread_snapshot_conflict(
+        "thread-1",
+        action="accept_remote_latest",
+        codex_home=target_home,
+        exchange_dir=exchange_dir,
+        device_identity_path=target_device,
+        ledger_path=target_ledger,
+    )
+
+    assert result["conflicts"]["conflict_count"] == 0
+    with sqlite3.connect(target_home / "state_5.sqlite") as conn:
+        row = conn.execute(
+            "SELECT title, preview FROM threads WHERE id = ?",
+            ("thread-1",),
+        ).fetchone()
+    assert row == ("Remote title", "Remote title")
+    status = thread_snapshot_conflicts_payload(
+        codex_home=target_home,
+        exchange_dir=exchange_dir,
+        device_identity_path=target_device,
+        ledger_path=target_ledger,
+    )
+    assert status["conflict_count"] == 0
+
+
+def test_resolve_conflict_accept_local_ignores_remote_snapshot(tmp_path: Path) -> None:
+    source_home = tmp_path / "source"
+    target_home = tmp_path / "target"
+    exchange_dir = tmp_path / "exchange"
+    target_ledger = tmp_path / "target-ledger.json"
+    source_device = tmp_path / "source-device.json"
+    target_device = tmp_path / "target-device.json"
+    _create_state_db(source_home / "state_5.sqlite")
+    _create_state_db(target_home / "state_5.sqlite")
+    _insert_thread(
+        source_home,
+        "thread-1",
+        title="Remote title",
+        updated_at=20,
+        terminal_message="remote done",
+    )
+    _insert_thread(
+        target_home,
+        "thread-1",
+        title="Local title",
+        updated_at=30,
+        terminal_message="local done",
+    )
+    export_thread_snapshots(
+        codex_home=source_home,
+        exchange_dir=exchange_dir,
+        device_identity_path=source_device,
+        ledger_path=tmp_path / "source-ledger.json",
+        stability_delay_seconds=0,
+        max_age_days=None,
+    )
+    import_thread_snapshots(
+        codex_home=target_home,
+        exchange_dir=exchange_dir,
+        device_identity_path=target_device,
+        ledger_path=target_ledger,
+    )
+
+    result = resolve_thread_snapshot_conflict(
+        "thread-1",
+        action="accept_local",
+        codex_home=target_home,
+        exchange_dir=exchange_dir,
+        device_identity_path=target_device,
+        ledger_path=target_ledger,
+    )
+    second_import = import_thread_snapshots(
+        codex_home=target_home,
+        exchange_dir=exchange_dir,
+        device_identity_path=target_device,
+        ledger_path=target_ledger,
+    )
+
+    assert result["conflicts"]["conflict_count"] == 0
+    assert second_import[0].status == "already_imported"
+    with sqlite3.connect(target_home / "state_5.sqlite") as conn:
+        row = conn.execute(
+            "SELECT title, preview FROM threads WHERE id = ?",
+            ("thread-1",),
+        ).fetchone()
+    assert row == ("Local title", "Local title")
