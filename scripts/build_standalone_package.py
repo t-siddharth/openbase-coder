@@ -59,6 +59,7 @@ def main() -> int:
     stage_optional_tree(INSTRUCTIONS_ROOT, package_dir / "instructions")
     stage_optional_tree(SKILLS_ROOT / "skills", package_dir / "skills")
     write_metadata(package_dir, version=args.version, target=args.target)
+    ad_hoc_sign_macos_package(package_dir)
     validate_package(package_dir)
 
     if args.archive_output:
@@ -137,20 +138,21 @@ def relocate_macos_python(python_dir: Path) -> None:
 
     lib_dir = python_dir / "lib"
     libpython_paths = tuple(sorted(lib_dir.glob("libpython*.dylib")))
-    dylib_paths = _packaged_dylibs(python_dir)
-    dylibs_by_name = {path.name: path for path in dylib_paths}
+    packaged_libraries_by_name = {
+        path.name: path for path in _packaged_native_libraries(python_dir)
+    }
 
-    for dylib_path in dylib_paths:
-        _relocate_macho_install_id(dylib_path)
+    for native_library_path in packaged_libraries_by_name.values():
+        _relocate_macho_install_id(native_library_path)
 
     libpython_names = {path.name for path in libpython_paths}
     for macho_path in _macho_files(python_dir):
         changes: list[str] = []
         for linked in _macho_linked_libraries(macho_path):
             linked_name = Path(linked).name
-            if not _is_host_path(linked):
+            if not _is_relocatable_link(linked):
                 continue
-            packaged_dylib = dylibs_by_name.get(linked_name)
+            packaged_dylib = packaged_libraries_by_name.get(linked_name)
             if packaged_dylib is None and linked_name in libpython_names:
                 packaged_dylib = lib_dir / linked_name
             if packaged_dylib is None:
@@ -250,6 +252,18 @@ def write_archive(package_dir: Path, archive_path: Path, *, force: bool) -> None
             archive.add(child, arcname=child.name)
 
 
+def ad_hoc_sign_macos_package(package_dir: Path) -> None:
+    if platform.system() != "Darwin" or not shutil.which("codesign"):
+        return
+    for path in sorted(_macho_files(package_dir), key=lambda item: len(item.parts), reverse=True):
+        subprocess.run(
+            ["codesign", "--force", "--sign", "-", "--timestamp=none", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+
 def runtime_python(python_dir: Path) -> Path:
     return python_dir / "bin" / "python"
 
@@ -293,7 +307,6 @@ def _validate_no_host_macos_library_links(package_dir: Path) -> None:
     if platform.system() != "Darwin" or not shutil.which("otool"):
         return
 
-    forbidden_prefixes = ("/opt/homebrew/", "/usr/local/", "/Users/")
     for path in _macho_files(package_dir):
         result = subprocess.run(
             ["otool", "-L", str(path)],
@@ -302,8 +315,10 @@ def _validate_no_host_macos_library_links(package_dir: Path) -> None:
             text=True,
         )
         for raw_line in result.stdout.splitlines()[1:]:
+            if not raw_line.startswith("\t"):
+                continue
             linked = raw_line.strip().split(" ", 1)[0]
-            if linked.startswith(forbidden_prefixes):
+            if _is_relocatable_link(linked):
                 raise RuntimeError(
                     "Package validation failed; Mach-O file links to build-host "
                     f"library {linked}: {path}"
@@ -356,21 +371,35 @@ def _macho_linked_libraries(path: Path) -> list[str]:
     return [
         raw_line.strip().split(" ", 1)[0]
         for raw_line in result.stdout.splitlines()[1:]
-        if raw_line.strip()
+        if raw_line.startswith("\t") and raw_line.strip()
     ]
 
 
-def _is_host_path(value: str) -> bool:
-    return value.startswith(("/opt/homebrew/", "/usr/local/", "/Users/"))
+def _is_relocatable_link(value: str) -> bool:
+    if not value.startswith("/"):
+        return False
+    return not value.startswith(("/usr/lib/", "/System/Library/"))
 
 
 def _packaged_dylibs(python_dir: Path) -> tuple[Path, ...]:
     return tuple(sorted(path for path in python_dir.rglob("*.dylib") if path.is_file()))
 
 
+def _packaged_native_libraries(python_dir: Path) -> tuple[Path, ...]:
+    paths = set(_packaged_dylibs(python_dir))
+    for path in python_dir.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        if path.suffix in {".so", ".bundle"} or any(
+            suffix.endswith(".so") for suffix in path.suffixes
+        ):
+            paths.add(path)
+    return tuple(sorted(paths))
+
+
 def _relocate_macho_install_id(path: Path) -> None:
     old_id = _macho_install_id(path)
-    if not old_id or not _is_host_path(old_id):
+    if not old_id or not _is_relocatable_link(old_id):
         return
     subprocess.run(
         ["install_name_tool", "-id", f"@rpath/{path.name}", str(path)],
